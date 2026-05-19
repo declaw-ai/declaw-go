@@ -214,6 +214,9 @@ func configFromListOpts(o *listOpts) *Config {
 	if o.APIURL != "" {
 		cfg.APIURL = o.APIURL
 	}
+	if o.Domain != "" {
+		cfg.Domain = o.Domain
+	}
 	return cfg
 }
 

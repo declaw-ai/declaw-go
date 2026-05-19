@@ -34,6 +34,8 @@ func (p *PTY) Create(ctx context.Context, size ...PtySize) (*PtyHandle, error) {
 			"cols": cols,
 			"rows": rows,
 		},
+		"user":    "user",
+		"timeout": 3600,
 	}
 
 	path := fmt.Sprintf("/sandboxes/%s/pty", p.sandboxID)

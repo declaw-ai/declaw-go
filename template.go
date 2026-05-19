@@ -130,14 +130,17 @@ func ListTemplates(ctx context.Context, opts ...SandboxOption) ([]TemplateInfo, 
 		return nil, err
 	}
 
-	var raw []struct {
-		TemplateID string `json:"template_id"`
-		Alias      string `json:"alias"`
-		CreatedAt  string `json:"created_at"`
+	var wrapper struct {
+		Templates []struct {
+			TemplateID string `json:"template_id"`
+			Alias      string `json:"alias"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"templates"`
 	}
-	if err := json.Unmarshal(respBody, &raw); err != nil {
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("parsing templates list: %w", err)
 	}
+	raw := wrapper.Templates
 
 	templates := make([]TemplateInfo, len(raw))
 	for i, r := range raw {

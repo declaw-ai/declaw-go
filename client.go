@@ -187,6 +187,8 @@ func (c *apiClient) delete(ctx context.Context, path string) ([]byte, error) {
 }
 
 // stream performs an HTTP request and returns the raw response for streaming.
+// It uses a dedicated transport with compression disabled so SSE events are
+// delivered without buffering.
 func (c *apiClient) stream(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	url := c.config.BaseURL() + path
 
@@ -201,8 +203,16 @@ func (c *apiClient) stream(ctx context.Context, method, path string, body io.Rea
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Connection", "keep-alive")
 
-	return c.httpClient.Do(req)
+	streamClient := &http.Client{
+		Transport: &http.Transport{
+			DisableCompression: true,
+		},
+	}
+	return streamClient.Do(req)
 }
 
 // configFromSandboxOpts creates a Config by merging sandbox options with defaults.

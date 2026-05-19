@@ -85,6 +85,27 @@ func WithVolumes(v []VolumeAttachment) SandboxOption {
 	}
 }
 
+// WithSandboxAPIKey sets the API key for the sandbox operation.
+func WithSandboxAPIKey(key string) SandboxOption {
+	return func(o *sandboxOpts) {
+		o.APIKey = key
+	}
+}
+
+// WithSandboxAPIURL sets the API URL for the sandbox operation.
+func WithSandboxAPIURL(url string) SandboxOption {
+	return func(o *sandboxOpts) {
+		o.APIURL = url
+	}
+}
+
+// WithSandboxDomain sets the API domain for the sandbox operation.
+func WithSandboxDomain(domain string) SandboxOption {
+	return func(o *sandboxOpts) {
+		o.Domain = domain
+	}
+}
+
 // runOpts holds the resolved options for command execution.
 type runOpts struct {
 	Envs     map[string]string
@@ -155,6 +176,7 @@ type listOpts struct {
 	Offset int
 	APIKey string
 	APIURL string
+	Domain string
 }
 
 // ListOption is a functional option for configuring sandbox listing.
@@ -192,6 +214,13 @@ func WithListAPIKey(key string) ListOption {
 func WithListAPIURL(url string) ListOption {
 	return func(o *listOpts) {
 		o.APIURL = url
+	}
+}
+
+// WithListDomain sets the API domain for listing sandboxes.
+func WithListDomain(domain string) ListOption {
+	return func(o *listOpts) {
+		o.Domain = domain
 	}
 }
 
