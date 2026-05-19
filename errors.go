@@ -1,6 +1,7 @@
 package declaw
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -150,6 +151,13 @@ func errorFromResponse(resp *http.Response, body []byte, sandboxID string) error
 	msg := string(body)
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
+	}
+
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
+		msg = parsed.Message
 	}
 
 	base := &SandboxError{
