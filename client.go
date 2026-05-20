@@ -205,11 +205,11 @@ func (c *apiClient) stream(ctx context.Context, method, path string, body io.Rea
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Connection", "keep-alive")
 
 	streamClient := &http.Client{
 		Transport: &http.Transport{
-			DisableCompression: true,
+			DisableCompression:  true,
+			ForceAttemptHTTP2:   true,
 		},
 	}
 	return streamClient.Do(req)
