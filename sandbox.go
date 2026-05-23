@@ -269,6 +269,19 @@ func ListSandboxes(ctx context.Context, opts ...ListOption) (*SandboxPage, error
 	return page, nil
 }
 
+// GetHost returns the URL that reverse-proxies HTTP traffic to the given
+// port inside the sandbox. Requires AllowPublicTraffic to be enabled on
+// the sandbox's network config (the default).
+func (s *Sandbox) GetHost(port int) string {
+	return fmt.Sprintf("%s/sandboxes/%s/ports/%d", s.client.config.BaseURL(), s.ID, port)
+}
+
+// GetMcpURL returns the URL for an MCP server listening on port 50005
+// inside the sandbox.
+func (s *Sandbox) GetMcpURL() string {
+	return s.GetHost(50005) + "/mcp"
+}
+
 // KillSandbox terminates a sandbox by its ID.
 func KillSandbox(ctx context.Context, sandboxID string, opts ...SandboxOption) error {
 	if err := validateSandboxID(sandboxID); err != nil {
