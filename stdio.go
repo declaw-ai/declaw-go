@@ -62,12 +62,7 @@ func (s *StdioSession) Start(ctx context.Context, cmd string, opts *StdioStartOp
 	}
 
 	path := fmt.Sprintf("/sandboxes/%s/stdio", s.sandboxID)
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := s.client.post(ctx, path, body)
+	resp, err := s.client.post(ctx, path, req)
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +84,8 @@ func (s *StdioSession) Start(ctx context.Context, cmd string, opts *StdioStartOp
 // SendStdin sends data to the process's stdin.
 func (h *StdioHandle) SendStdin(ctx context.Context, data []byte) error {
 	encoded := base64.StdEncoding.EncodeToString(data)
-	body, err := json.Marshal(map[string]string{"data": encoded})
-	if err != nil {
-		return err
-	}
 	path := fmt.Sprintf("/sandboxes/%s/stdio/%s/stdin", h.sandboxID, h.CmdID)
-	_, err = h.client.post(ctx, path, body)
+	_, err := h.client.post(ctx, path, map[string]string{"data": encoded})
 	return err
 }
 
@@ -124,6 +115,7 @@ func (h *StdioHandle) Stream(ctx context.Context, opts *StdioStreamOpts) (*Stdio
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var event string
 	for scanner.Scan() {
 		if ctx.Err() != nil {
