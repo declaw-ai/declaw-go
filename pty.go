@@ -121,6 +121,7 @@ func (h *PtyHandle) Stream(ctx context.Context) (<-chan []byte, error) {
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		var eventType string
 
 		for scanner.Scan() {
