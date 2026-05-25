@@ -27,6 +27,9 @@ type Sandbox struct {
 	// PTY provides pseudo-terminal access to the sandbox.
 	PTY *PTY
 
+	// Stdio provides interactive subprocess sessions with stdin pipe.
+	Stdio *StdioSession
+
 	client             *apiClient
 	envdAccessToken    string
 	sandboxDomain      string
@@ -47,6 +50,10 @@ func newSandbox(id string, client *apiClient) *Sandbox {
 			client:    client,
 		},
 		PTY: &PTY{
+			sandboxID: id,
+			client:    client,
+		},
+		Stdio: &StdioSession{
 			sandboxID: id,
 			client:    client,
 		},
