@@ -1092,3 +1092,610 @@ func TestParseSecurityPolicy_NullValues(t *testing.T) {
 		t.Error("PII should be nil for null value")
 	}
 }
+
+// --- CustomPolicyConfig ---
+
+func TestCustomPolicyConfig_ZeroValue(t *testing.T) {
+	var cfg CustomPolicyConfig
+	if cfg.Enabled {
+		t.Error("zero Enabled should be false")
+	}
+	if cfg.InlineRego != "" {
+		t.Errorf("zero InlineRego = %q, want empty", cfg.InlineRego)
+	}
+	if cfg.InlineModules != nil {
+		t.Error("zero InlineModules should be nil")
+	}
+	if cfg.PolicyRef != "" {
+		t.Errorf("zero PolicyRef = %q, want empty", cfg.PolicyRef)
+	}
+	if cfg.DefaultDeny {
+		t.Error("zero DefaultDeny should be false")
+	}
+}
+
+func TestCustomPolicyConfig_AllFields(t *testing.T) {
+	cfg := CustomPolicyConfig{
+		Enabled:       true,
+		InlineRego:    `package main\ndeny_command contains msg if { msg := "blocked" }`,
+		InlineModules: []string{`package helper\nallow := true`},
+		PolicyRef:     "policy-v1",
+		DefaultDeny:   true,
+	}
+	if !cfg.Enabled {
+		t.Error("expected Enabled = true")
+	}
+	if cfg.InlineRego == "" {
+		t.Error("expected InlineRego to be set")
+	}
+	if len(cfg.InlineModules) != 1 {
+		t.Errorf("InlineModules length = %d, want 1", len(cfg.InlineModules))
+	}
+	if cfg.PolicyRef != "policy-v1" {
+		t.Errorf("PolicyRef = %q, want %q", cfg.PolicyRef, "policy-v1")
+	}
+	if !cfg.DefaultDeny {
+		t.Error("expected DefaultDeny = true")
+	}
+}
+
+func TestSecurityPolicy_CustomPolicy_Field(t *testing.T) {
+	policy := SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{Enabled: true},
+	}
+	if policy.CustomPolicy == nil {
+		t.Fatal("CustomPolicy should not be nil")
+	}
+	if !policy.CustomPolicy.Enabled {
+		t.Error("CustomPolicy.Enabled should be true")
+	}
+}
+
+func TestSecurityPolicy_ZeroValue_CustomPolicyNil(t *testing.T) {
+	var policy SecurityPolicy
+	if policy.CustomPolicy != nil {
+		t.Error("zero CustomPolicy should be nil")
+	}
+}
+
+// --- CustomPolicy ToJSON serialization ---
+
+func TestSecurityPolicy_ToJSON_CustomPolicy_Basic(t *testing.T) {
+	policy := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:     true,
+			InlineRego:  `package main\ndeny := true`,
+			DefaultDeny: true,
+		},
+	}
+	result := policy.ToJSON()
+	if result == nil {
+		t.Fatal("ToJSON returned nil")
+	}
+	cpRaw, ok := result["custom_policy"]
+	if !ok {
+		t.Fatal("expected 'custom_policy' key in ToJSON output")
+	}
+	cp, ok := cpRaw.(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_policy should be a map")
+	}
+	if cp["enabled"] != true {
+		t.Error("custom_policy.enabled should be true")
+	}
+	if cp["default_deny"] != true {
+		t.Error("custom_policy.default_deny should be true")
+	}
+	if cp["inline_rego"] == "" {
+		t.Error("custom_policy.inline_rego should be set")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_CustomPolicy_InlineModules(t *testing.T) {
+	policy := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled: true,
+			InlineModules: []string{
+				`package mod_a\nallow := true`,
+				`package mod_b\ndenied := false`,
+			},
+		},
+	}
+	result := policy.ToJSON()
+	cp, ok := result["custom_policy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_policy should be a map")
+	}
+	modules, ok := cp["inline_modules"].([]interface{})
+	if !ok {
+		t.Fatal("custom_policy.inline_modules should be a []interface{}")
+	}
+	if len(modules) != 2 {
+		t.Errorf("inline_modules length = %d, want 2", len(modules))
+	}
+	if modules[0] != `package mod_a\nallow := true` {
+		t.Errorf("modules[0] = %q, want expected", modules[0])
+	}
+}
+
+func TestSecurityPolicy_ToJSON_CustomPolicy_OmitEmptyStrings(t *testing.T) {
+	// inline_rego and policy_ref should be absent when empty
+	policy := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:     false,
+			DefaultDeny: false,
+			// InlineRego and PolicyRef deliberately empty
+		},
+	}
+	result := policy.ToJSON()
+	cp, ok := result["custom_policy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_policy should be present even when all optional fields are empty")
+	}
+	if _, exists := cp["inline_rego"]; exists {
+		t.Error("inline_rego should be absent when empty")
+	}
+	if _, exists := cp["policy_ref"]; exists {
+		t.Error("policy_ref should be absent when empty")
+	}
+	if _, exists := cp["inline_modules"]; exists {
+		t.Error("inline_modules should be absent when nil/empty")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_CustomPolicy_OmitEmptyModules(t *testing.T) {
+	policy := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:       true,
+			InlineModules: []string{}, // empty slice — should be omitted
+		},
+	}
+	result := policy.ToJSON()
+	cp, ok := result["custom_policy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_policy should be a map")
+	}
+	if _, exists := cp["inline_modules"]; exists {
+		t.Error("inline_modules should be absent for empty slice")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_CustomPolicy_PolicyRef(t *testing.T) {
+	policy := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:   true,
+			PolicyRef: "bundle://org/policy@v2",
+		},
+	}
+	result := policy.ToJSON()
+	cp, ok := result["custom_policy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_policy should be a map")
+	}
+	if cp["policy_ref"] != "bundle://org/policy@v2" {
+		t.Errorf("policy_ref = %q, want expected", cp["policy_ref"])
+	}
+}
+
+func TestSecurityPolicy_ToJSON_NoCustomPolicy(t *testing.T) {
+	// When CustomPolicy is nil, the key must not appear in the output
+	policy := &SecurityPolicy{
+		PII: &PIIConfig{Enabled: true},
+	}
+	result := policy.ToJSON()
+	if _, exists := result["custom_policy"]; exists {
+		t.Error("custom_policy key must be absent when CustomPolicy is nil")
+	}
+}
+
+// --- CustomPolicy ParseSecurityPolicy ---
+
+func TestParseSecurityPolicy_CustomPolicy_Basic(t *testing.T) {
+	data := map[string]interface{}{
+		"custom_policy": map[string]interface{}{
+			"enabled":      true,
+			"default_deny": true,
+			"inline_rego":  `package main\ndeny := true`,
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.CustomPolicy == nil {
+		t.Fatal("CustomPolicy should not be nil")
+	}
+	if !policy.CustomPolicy.Enabled {
+		t.Error("CustomPolicy.Enabled should be true")
+	}
+	if !policy.CustomPolicy.DefaultDeny {
+		t.Error("CustomPolicy.DefaultDeny should be true")
+	}
+	if policy.CustomPolicy.InlineRego == "" {
+		t.Error("CustomPolicy.InlineRego should be set")
+	}
+}
+
+func TestParseSecurityPolicy_CustomPolicy_InlineModules(t *testing.T) {
+	data := map[string]interface{}{
+		"custom_policy": map[string]interface{}{
+			"enabled": true,
+			"inline_modules": []interface{}{
+				`package mod_a\nallow := true`,
+				`package mod_b\ndenied := false`,
+			},
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.CustomPolicy == nil {
+		t.Fatal("CustomPolicy should not be nil")
+	}
+	if len(policy.CustomPolicy.InlineModules) != 2 {
+		t.Errorf("InlineModules length = %d, want 2", len(policy.CustomPolicy.InlineModules))
+	}
+	if policy.CustomPolicy.InlineModules[0] != `package mod_a\nallow := true` {
+		t.Errorf("InlineModules[0] = %q, want expected", policy.CustomPolicy.InlineModules[0])
+	}
+}
+
+func TestParseSecurityPolicy_CustomPolicy_Null(t *testing.T) {
+	data := map[string]interface{}{
+		"custom_policy": nil,
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.CustomPolicy != nil {
+		t.Error("CustomPolicy should be nil when map value is null")
+	}
+}
+
+func TestParseSecurityPolicy_CustomPolicy_Absent(t *testing.T) {
+	data := map[string]interface{}{
+		"pii": map[string]interface{}{"enabled": true},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.CustomPolicy != nil {
+		t.Error("CustomPolicy should be nil when key is absent")
+	}
+}
+
+// --- CustomPolicy full round-trip ---
+
+func TestCustomPolicy_RoundTrip_InlineRegoAndModules(t *testing.T) {
+	original := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:    true,
+			InlineRego: `package main\ndeny_command contains msg if { input.action.command in {"rm"}; msg := "blocked" }`,
+			InlineModules: []string{
+				`package helper\nutils_deny := false`,
+				`package allowlist\nhosts := {"api.openai.com"}`,
+			},
+			DefaultDeny: true,
+		},
+	}
+
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.CustomPolicy == nil {
+		t.Fatal("CustomPolicy nil after round-trip")
+	}
+	if !restored.CustomPolicy.Enabled {
+		t.Error("CustomPolicy.Enabled lost in round-trip")
+	}
+	if restored.CustomPolicy.InlineRego != original.CustomPolicy.InlineRego {
+		t.Errorf("InlineRego mismatch after round-trip: got %q, want %q",
+			restored.CustomPolicy.InlineRego, original.CustomPolicy.InlineRego)
+	}
+	if len(restored.CustomPolicy.InlineModules) != 2 {
+		t.Errorf("InlineModules length = %d, want 2", len(restored.CustomPolicy.InlineModules))
+	}
+	if restored.CustomPolicy.InlineModules[0] != original.CustomPolicy.InlineModules[0] {
+		t.Errorf("InlineModules[0] mismatch: got %q, want %q",
+			restored.CustomPolicy.InlineModules[0], original.CustomPolicy.InlineModules[0])
+	}
+	if restored.CustomPolicy.InlineModules[1] != original.CustomPolicy.InlineModules[1] {
+		t.Errorf("InlineModules[1] mismatch: got %q, want %q",
+			restored.CustomPolicy.InlineModules[1], original.CustomPolicy.InlineModules[1])
+	}
+	if !restored.CustomPolicy.DefaultDeny {
+		t.Error("CustomPolicy.DefaultDeny lost in round-trip")
+	}
+
+	// Confirm inline_modules is a JSON array in the serialized map
+	cpMap, ok := serialized["custom_policy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("serialized custom_policy is not a map")
+	}
+	modules, ok := cpMap["inline_modules"].([]interface{})
+	if !ok {
+		t.Fatal("serialized inline_modules is not a []interface{} — must be a JSON array")
+	}
+	if len(modules) != 2 {
+		t.Errorf("serialized inline_modules length = %d, want 2", len(modules))
+	}
+}
+
+func TestCustomPolicy_RoundTrip_PolicyRef(t *testing.T) {
+	original := &SecurityPolicy{
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:   true,
+			PolicyRef: "bundle://company/sandbox-policy@v3",
+		},
+	}
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.CustomPolicy == nil {
+		t.Fatal("CustomPolicy nil after round-trip")
+	}
+	if restored.CustomPolicy.PolicyRef != "bundle://company/sandbox-policy@v3" {
+		t.Errorf("PolicyRef = %q, want expected", restored.CustomPolicy.PolicyRef)
+	}
+}
+
+func TestCustomPolicy_RoundTrip_WithOtherPolicies(t *testing.T) {
+	// Ensure CustomPolicy composes correctly alongside other sub-configs
+	original := &SecurityPolicy{
+		PII: &PIIConfig{Enabled: true, Types: []PIIType{PIIEmail}},
+		InjectionDefense: &InjectionDefenseConfig{
+			Enabled:     true,
+			Sensitivity: InjectionSensitivityHigh,
+		},
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:       true,
+			InlineRego:    `package main\ndeny := false`,
+			InlineModules: []string{`package extra\nok := true`},
+			DefaultDeny:   false,
+		},
+	}
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.PII == nil || !restored.PII.Enabled {
+		t.Error("PII should survive round-trip alongside CustomPolicy")
+	}
+	if restored.InjectionDefense == nil || !restored.InjectionDefense.Enabled {
+		t.Error("InjectionDefense should survive round-trip alongside CustomPolicy")
+	}
+	if restored.CustomPolicy == nil {
+		t.Fatal("CustomPolicy should survive round-trip")
+	}
+	if !restored.CustomPolicy.Enabled {
+		t.Error("CustomPolicy.Enabled should be true")
+	}
+	if len(restored.CustomPolicy.InlineModules) != 1 {
+		t.Errorf("InlineModules length = %d, want 1", len(restored.CustomPolicy.InlineModules))
+	}
+}
+
+// --- ContentGateConfig ---
+
+func TestContentGateConfig_ZeroValue(t *testing.T) {
+	var cfg ContentGateConfig
+	if cfg.Enabled {
+		t.Error("zero Enabled should be false")
+	}
+	if cfg.Domains != nil {
+		t.Error("zero Domains should be nil")
+	}
+}
+
+func TestContentGateConfig_AllFields(t *testing.T) {
+	cfg := ContentGateConfig{
+		Enabled: true,
+		Domains: []string{"api.openai.com", "api.anthropic.com"},
+	}
+	if !cfg.Enabled {
+		t.Error("expected Enabled = true")
+	}
+	if len(cfg.Domains) != 2 {
+		t.Errorf("Domains length = %d, want 2", len(cfg.Domains))
+	}
+	if cfg.Domains[0] != "api.openai.com" {
+		t.Errorf("Domains[0] = %q, want %q", cfg.Domains[0], "api.openai.com")
+	}
+}
+
+func TestSecurityPolicy_ContentGate_Field(t *testing.T) {
+	policy := SecurityPolicy{
+		ContentGate: &ContentGateConfig{Enabled: true},
+	}
+	if policy.ContentGate == nil {
+		t.Fatal("ContentGate should not be nil")
+	}
+	if !policy.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled should be true")
+	}
+}
+
+func TestSecurityPolicy_ZeroValue_ContentGateNil(t *testing.T) {
+	var policy SecurityPolicy
+	if policy.ContentGate != nil {
+		t.Error("zero ContentGate should be nil")
+	}
+}
+
+// --- ContentGate ToJSON serialization ---
+
+func TestSecurityPolicy_ToJSON_ContentGate_Enabled(t *testing.T) {
+	policy := &SecurityPolicy{
+		ContentGate: &ContentGateConfig{
+			Enabled: true,
+			Domains: []string{"api.openai.com", "api.anthropic.com"},
+		},
+	}
+	result := policy.ToJSON()
+	cgRaw, ok := result["content_gate"]
+	if !ok {
+		t.Fatal("expected 'content_gate' key in ToJSON output")
+	}
+	cg, ok := cgRaw.(map[string]interface{})
+	if !ok {
+		t.Fatal("content_gate should be a map")
+	}
+	if cg["enabled"] != true {
+		t.Error("content_gate.enabled should be true")
+	}
+	domains, ok := cg["domains"].([]string)
+	if !ok {
+		t.Fatal("content_gate.domains should be []string")
+	}
+	if len(domains) != 2 {
+		t.Errorf("content_gate.domains length = %d, want 2", len(domains))
+	}
+}
+
+func TestSecurityPolicy_ToJSON_ContentGate_NoDomains(t *testing.T) {
+	// When Domains is empty/nil, the key must be absent from the serialized map.
+	policy := &SecurityPolicy{
+		ContentGate: &ContentGateConfig{Enabled: true},
+	}
+	result := policy.ToJSON()
+	cg, ok := result["content_gate"].(map[string]interface{})
+	if !ok {
+		t.Fatal("content_gate should be a map")
+	}
+	if _, exists := cg["domains"]; exists {
+		t.Error("content_gate.domains should be absent when nil/empty")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_NoContentGate(t *testing.T) {
+	// When ContentGate is nil, the key must not appear in the output.
+	policy := &SecurityPolicy{
+		PII: &PIIConfig{Enabled: true},
+	}
+	result := policy.ToJSON()
+	if _, exists := result["content_gate"]; exists {
+		t.Error("content_gate key must be absent when ContentGate is nil")
+	}
+}
+
+// --- ContentGate ParseSecurityPolicy ---
+
+func TestParseSecurityPolicy_ContentGate_Basic(t *testing.T) {
+	data := map[string]interface{}{
+		"content_gate": map[string]interface{}{
+			"enabled": true,
+			"domains": []interface{}{"api.openai.com", "api.anthropic.com"},
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.ContentGate == nil {
+		t.Fatal("ContentGate should not be nil")
+	}
+	if !policy.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled should be true")
+	}
+	if len(policy.ContentGate.Domains) != 2 {
+		t.Errorf("ContentGate.Domains length = %d, want 2", len(policy.ContentGate.Domains))
+	}
+	if policy.ContentGate.Domains[0] != "api.openai.com" {
+		t.Errorf("ContentGate.Domains[0] = %q, want %q", policy.ContentGate.Domains[0], "api.openai.com")
+	}
+}
+
+func TestParseSecurityPolicy_ContentGate_NoDomains(t *testing.T) {
+	data := map[string]interface{}{
+		"content_gate": map[string]interface{}{
+			"enabled": false,
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.ContentGate == nil {
+		t.Fatal("ContentGate should not be nil")
+	}
+	if policy.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled should be false")
+	}
+	if policy.ContentGate.Domains != nil {
+		t.Error("ContentGate.Domains should be nil when absent")
+	}
+}
+
+func TestParseSecurityPolicy_ContentGate_Null(t *testing.T) {
+	data := map[string]interface{}{
+		"content_gate": nil,
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.ContentGate != nil {
+		t.Error("ContentGate should be nil when map value is null")
+	}
+}
+
+func TestParseSecurityPolicy_ContentGate_Absent(t *testing.T) {
+	data := map[string]interface{}{
+		"pii": map[string]interface{}{"enabled": true},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.ContentGate != nil {
+		t.Error("ContentGate should be nil when key is absent")
+	}
+}
+
+// --- ContentGate full round-trip ---
+
+func TestContentGate_RoundTrip_WithDomains(t *testing.T) {
+	original := &SecurityPolicy{
+		ContentGate: &ContentGateConfig{
+			Enabled: true,
+			Domains: []string{"api.openai.com", "api.anthropic.com", "huggingface.co"},
+		},
+	}
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.ContentGate == nil {
+		t.Fatal("ContentGate nil after round-trip")
+	}
+	if !restored.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled lost in round-trip")
+	}
+	if len(restored.ContentGate.Domains) != 3 {
+		t.Errorf("ContentGate.Domains length = %d, want 3", len(restored.ContentGate.Domains))
+	}
+	if restored.ContentGate.Domains[0] != "api.openai.com" {
+		t.Errorf("ContentGate.Domains[0] = %q, want %q", restored.ContentGate.Domains[0], "api.openai.com")
+	}
+}
+
+func TestContentGate_RoundTrip_DisabledNoDomains(t *testing.T) {
+	original := &SecurityPolicy{
+		ContentGate: &ContentGateConfig{Enabled: false},
+	}
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.ContentGate == nil {
+		t.Fatal("ContentGate nil after round-trip")
+	}
+	if restored.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled should remain false")
+	}
+	if len(restored.ContentGate.Domains) != 0 {
+		t.Errorf("ContentGate.Domains should be empty, got %v", restored.ContentGate.Domains)
+	}
+}
+
+func TestContentGate_RoundTrip_WithOtherPolicies(t *testing.T) {
+	original := &SecurityPolicy{
+		Toxicity:    &ToxicityConfig{Enabled: true, Threshold: 0.9},
+		ContentGate: &ContentGateConfig{Enabled: true, Domains: []string{"api.openai.com"}},
+		InvisibleText: &InvisibleTextConfig{Enabled: true, DetectZeroWidth: true},
+	}
+	serialized := original.ToJSON()
+	restored := ParseSecurityPolicy(serialized)
+
+	if restored.Toxicity == nil || !restored.Toxicity.Enabled {
+		t.Error("Toxicity should survive round-trip alongside ContentGate")
+	}
+	if restored.InvisibleText == nil || !restored.InvisibleText.Enabled {
+		t.Error("InvisibleText should survive round-trip alongside ContentGate")
+	}
+	if restored.ContentGate == nil {
+		t.Fatal("ContentGate should survive round-trip")
+	}
+	if !restored.ContentGate.Enabled {
+		t.Error("ContentGate.Enabled should be true")
+	}
+	if len(restored.ContentGate.Domains) != 1 {
+		t.Errorf("ContentGate.Domains length = %d, want 1", len(restored.ContentGate.Domains))
+	}
+}

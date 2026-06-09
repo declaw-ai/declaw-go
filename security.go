@@ -2,7 +2,8 @@ package declaw
 
 // SecurityPolicy is the top-level security configuration for a Declaw sandbox.
 // It composes PII detection, injection defense, traffic transformations,
-// network policy, audit logging, and environment variable security.
+// network policy, audit logging, environment variable security, and
+// customer-supplied OPA/Rego custom policies.
 type SecurityPolicy struct {
 	PII              *PIIConfig
 	InjectionDefense *InjectionDefenseConfig
@@ -13,6 +14,8 @@ type SecurityPolicy struct {
 	Toxicity         *ToxicityConfig
 	CodeSecurity     *CodeSecurityConfig
 	InvisibleText    *InvisibleTextConfig
+	ContentGate      *ContentGateConfig
+	CustomPolicy     *CustomPolicyConfig
 }
 
 // PIIType identifies a category of personally identifiable information.
@@ -143,6 +146,52 @@ type CodeSecurityConfig struct {
 type InvisibleTextConfig struct {
 	Enabled         bool
 	DetectZeroWidth bool
+}
+
+// ContentGateConfig opts a sandbox into the content.scan OPA gate, which
+// enforces a model/endpoint allowlist without requiring an ML scanner.
+// Enabled defaults to false (gate is off). Domains is an optional list of
+// hosts to intercept; omit or leave empty to intercept none.
+type ContentGateConfig struct {
+	Enabled bool
+	Domains []string
+}
+
+// CustomPolicyConfig holds a customer-supplied OPA/Rego policy that is
+// evaluated at the envd, proxy, and guardrails layers for every sandbox
+// action. Customers can express custom authorization logic (e.g., block
+// dangerous commands, enforce domain allowlists) in OPA Rego alongside
+// the platform-default rules.
+type CustomPolicyConfig struct {
+	// Enabled activates custom policy evaluation for this sandbox.
+	Enabled bool
+
+	// InlineRego is a single Rego module string appended to platform
+	// defaults. Use this for a single-package customer policy, e.g.:
+	//
+	//   deny_command contains msg if {
+	//       input.action.command in {"rm", "dd"}
+	//       msg := "dangerous command blocked"
+	//   }
+	InlineRego string
+
+	// InlineModules contains additional independent Rego modules where each
+	// entry is its own complete Rego source with its own package declaration.
+	// Use this when the policy spans multiple packages that cannot be merged
+	// into the single InlineRego string.
+	InlineModules []string
+
+	// PolicyRef is reserved for future use as a reference to a bundled policy
+	// (e.g., a URL, policy ID, or version hash). Serialize it when set but
+	// the backend does not yet act on it.
+	PolicyRef string
+
+	// DefaultDeny controls fail-closed behavior: when true the evaluator
+	// denies the action if the OPA engine is unreachable or returns an error
+	// (fail-closed). When false the action is allowed on evaluator error
+	// (fail-open). Fail-closed is recommended for hard security gates;
+	// fail-open is acceptable for advisory-only scanners.
+	DefaultDeny bool
 }
 
 // RequiresTLSInterception returns true if any active scanner in the policy
@@ -282,6 +331,37 @@ func (sp *SecurityPolicy) ToJSON() map[string]interface{} {
 			"enabled":            sp.InvisibleText.Enabled,
 			"detect_zero_width": sp.InvisibleText.DetectZeroWidth,
 		}
+	}
+
+	if sp.ContentGate != nil {
+		cg := map[string]interface{}{
+			"enabled": sp.ContentGate.Enabled,
+		}
+		if len(sp.ContentGate.Domains) > 0 {
+			cg["domains"] = sp.ContentGate.Domains
+		}
+		m["content_gate"] = cg
+	}
+
+	if sp.CustomPolicy != nil {
+		cp := map[string]interface{}{
+			"enabled":      sp.CustomPolicy.Enabled,
+			"default_deny": sp.CustomPolicy.DefaultDeny,
+		}
+		if sp.CustomPolicy.InlineRego != "" {
+			cp["inline_rego"] = sp.CustomPolicy.InlineRego
+		}
+		if len(sp.CustomPolicy.InlineModules) > 0 {
+			modules := make([]interface{}, len(sp.CustomPolicy.InlineModules))
+			for i, mod := range sp.CustomPolicy.InlineModules {
+				modules[i] = mod
+			}
+			cp["inline_modules"] = modules
+		}
+		if sp.CustomPolicy.PolicyRef != "" {
+			cp["policy_ref"] = sp.CustomPolicy.PolicyRef
+		}
+		m["custom_policy"] = cp
 	}
 
 	return m
@@ -481,6 +561,43 @@ func ParseSecurityPolicy(data map[string]interface{}) *SecurityPolicy {
 				it.DetectZeroWidth = v
 			}
 			sp.InvisibleText = it
+		}
+	}
+
+	if cgRaw, ok := data["content_gate"]; ok && cgRaw != nil {
+		if cgMap, ok := cgRaw.(map[string]interface{}); ok {
+			cg := &ContentGateConfig{}
+			if v, ok := cgMap["enabled"].(bool); ok {
+				cg.Enabled = v
+			}
+			if dRaw, ok := cgMap["domains"]; ok && dRaw != nil {
+				cg.Domains = parseStringSlice(dRaw)
+			}
+			sp.ContentGate = cg
+		}
+	}
+
+	if cpRaw, ok := data["custom_policy"]; ok && cpRaw != nil {
+		if cpMap, ok := cpRaw.(map[string]interface{}); ok {
+			cp := &CustomPolicyConfig{}
+			if v, ok := cpMap["enabled"].(bool); ok {
+				cp.Enabled = v
+			}
+			if v, ok := cpMap["default_deny"].(bool); ok {
+				cp.DefaultDeny = v
+			}
+			if v, ok := cpMap["inline_rego"].(string); ok {
+				cp.InlineRego = v
+			}
+			if v, ok := cpMap["policy_ref"].(string); ok {
+				cp.PolicyRef = v
+			}
+			// inline_modules may arrive as []interface{} (from JSON decode) or
+			// []interface{} built by ToJSON; use parseStringSlice for both cases.
+			if modRaw, ok := cpMap["inline_modules"]; ok && modRaw != nil {
+				cp.InlineModules = parseStringSlice(modRaw)
+			}
+			sp.CustomPolicy = cp
 		}
 	}
 

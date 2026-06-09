@@ -480,10 +480,10 @@ func TestListTemplates_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[
+		_, _ = w.Write([]byte(`{"templates": [
 			{"template_id": "tpl-1", "alias": "python", "created_at": "2026-01-01T00:00:00Z"},
 			{"template_id": "tpl-2", "alias": "node", "created_at": "2026-01-02T00:00:00Z"}
-		]`))
+		]}`))
 	})
 
 	_, opt := templateTestEnv(t, handler)
@@ -523,7 +523,7 @@ func TestListTemplates_EmptyList(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[]`))
+		_, _ = w.Write([]byte(`{"templates": []}`))
 	})
 
 	_, opt := templateTestEnv(t, handler)
