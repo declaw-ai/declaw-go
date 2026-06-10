@@ -148,6 +148,18 @@ func (c *apiClient) postRaw(ctx context.Context, path string, body []byte) ([]by
 	return c.doRequest(ctx, http.MethodPost, path, bytes.NewReader(body), "application/octet-stream")
 }
 
+// postGzip performs an HTTP POST request with a gzip-compressed body
+// (Content-Type: application/gzip).
+func (c *apiClient) postGzip(ctx context.Context, path string, body []byte) ([]byte, error) {
+	return c.doRequest(ctx, http.MethodPost, path, bytes.NewReader(body), "application/gzip")
+}
+
+// putRaw performs an HTTP PUT request with a raw binary body
+// (Content-Type: application/octet-stream).
+func (c *apiClient) putRaw(ctx context.Context, path string, body []byte) ([]byte, error) {
+	return c.doRequest(ctx, http.MethodPut, path, bytes.NewReader(body), "application/octet-stream")
+}
+
 // patch performs an HTTP PATCH request with a JSON body.
 func (c *apiClient) patch(ctx context.Context, path string, body interface{}) ([]byte, error) {
 	r, err := c.jsonBody(body)
@@ -186,6 +198,19 @@ func (c *apiClient) delete(ctx context.Context, path string) ([]byte, error) {
 	return c.doRequest(ctx, http.MethodDelete, path, nil, "")
 }
 
+// deleteJSON performs an HTTP DELETE request with a JSON body.
+func (c *apiClient) deleteJSON(ctx context.Context, path string, body interface{}) ([]byte, error) {
+	r, err := c.jsonBody(body)
+	if err != nil {
+		return nil, err
+	}
+	ct := ""
+	if body != nil {
+		ct = "application/json"
+	}
+	return c.doRequest(ctx, http.MethodDelete, path, r, ct)
+}
+
 // stream performs an HTTP request and returns the raw response for streaming.
 // It uses a dedicated transport with compression disabled so SSE events are
 // delivered without buffering.
@@ -208,8 +233,8 @@ func (c *apiClient) stream(ctx context.Context, method, path string, body io.Rea
 
 	streamClient := &http.Client{
 		Transport: &http.Transport{
-			DisableCompression:  true,
-			ForceAttemptHTTP2:   true,
+			DisableCompression: true,
+			ForceAttemptHTTP2:  true,
 		},
 	}
 	return streamClient.Do(req)

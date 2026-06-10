@@ -121,6 +121,26 @@ type RateLimitError struct {
 
 func (e *RateLimitError) Unwrap() error { return e.SandboxError }
 
+// ConflictError is returned when a request conflicts with the current state of
+// the resource (HTTP 409). For volume writes guarded by if_version it indicates
+// a CAS version mismatch; for locks it indicates the lock is held by another
+// holder.
+type ConflictError struct {
+	*SandboxError
+}
+
+func (e *ConflictError) Unwrap() error { return e.SandboxError }
+
+// VersionMismatchError is returned when an optimistic-concurrency (CAS) volume
+// write fails because the on-disk version no longer matches the supplied
+// if_version token (HTTP 409). It wraps ConflictError so callers may match
+// either type.
+type VersionMismatchError struct {
+	*ConflictError
+}
+
+func (e *VersionMismatchError) Unwrap() error { return e.ConflictError }
+
 // CommandExitError is returned when a command exits with a non-zero exit code.
 type CommandExitError struct {
 	*SandboxError
@@ -179,8 +199,14 @@ func errorFromResponse(resp *http.Response, body []byte, sandboxID string) error
 	case http.StatusRequestTimeout:
 		return &TimeoutError{SandboxError: base}
 
-	case http.StatusUnprocessableEntity:
+	case http.StatusConflict:
+		return &ConflictError{SandboxError: base}
+
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return &InvalidArgumentError{SandboxError: base}
+
+	case http.StatusRequestEntityTooLarge:
+		return &NotEnoughSpaceError{SandboxError: base}
 
 	case http.StatusTooManyRequests:
 		rle := &RateLimitError{SandboxError: base}

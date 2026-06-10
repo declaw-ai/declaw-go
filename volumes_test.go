@@ -271,6 +271,512 @@ func TestCreateVolume_ContextCanceled(t *testing.T) {
 	}
 }
 
+func TestCreateVolume_SendsGzipContentType(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu sync.Mutex
+		ct string
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		ct = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-1","name":"v","created_at":"2026-01-01T00:00:00Z"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	if _, err := CreateVolume(context.Background(), "v", makeGzipData(t, "x"), opt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if ct != "application/gzip" {
+		t.Errorf("expected Content-Type application/gzip, got %q", ct)
+	}
+}
+
+func TestCreateVolume_ParsesParityFields(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"volume_id":"vol-1","name":"v","created_at":"2026-01-01T00:00:00Z",
+			"backend":"file","quota_bytes":1048576,"updated_at":"2026-02-02T00:00:00Z"
+		}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	vol, err := CreateVolume(context.Background(), "v", makeGzipData(t, "x"), opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vol.Backend != "file" {
+		t.Errorf("expected Backend='file', got %q", vol.Backend)
+	}
+	if vol.QuotaBytes != 1048576 {
+		t.Errorf("expected QuotaBytes=1048576, got %d", vol.QuotaBytes)
+	}
+	if vol.UpdatedAt != "2026-02-02T00:00:00Z" {
+		t.Errorf("expected UpdatedAt set, got %q", vol.UpdatedAt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SnapshotVolume tests
+// ---------------------------------------------------------------------------
+
+func TestSnapshotVolume_Success(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		gotMethod string
+		gotPath   string
+		gotPathQ  string
+		gotName   string
+		bodyLen   int
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotPathQ = r.URL.Query().Get("path")
+		gotName = r.URL.Query().Get("name")
+		b, _ := io.ReadAll(r.Body)
+		bodyLen = len(b)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-snap","name":"snap","created_at":"2026-01-01T00:00:00Z"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	vol, err := SnapshotVolume(context.Background(), "sbx-1", "/home/user/data", "snap", opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/sandboxes/sbx-1/volumes/snapshot" {
+		t.Errorf("expected path /sandboxes/sbx-1/volumes/snapshot, got %s", gotPath)
+	}
+	if gotPathQ != "/home/user/data" {
+		t.Errorf("expected path query='/home/user/data', got %q", gotPathQ)
+	}
+	if gotName != "snap" {
+		t.Errorf("expected name query='snap', got %q", gotName)
+	}
+	if bodyLen != 0 {
+		t.Errorf("expected empty body, got %d bytes", bodyLen)
+	}
+	if vol.VolumeID != "vol-snap" {
+		t.Errorf("expected VolumeID='vol-snap', got %q", vol.VolumeID)
+	}
+}
+
+func TestSnapshotVolume_NoName(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu      sync.Mutex
+		hasName bool
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_, hasName = r.URL.Query()["name"]
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-snap","name":"snapshot","created_at":"2026-01-01T00:00:00Z"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	if _, err := SnapshotVolume(context.Background(), "sbx-1", "/data", "", opt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hasName {
+		t.Error("expected no name query param when name is empty")
+	}
+}
+
+func TestSnapshotVolume_BadPath(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"synthetic path not allowed"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := SnapshotVolume(context.Background(), "sbx-1", "/proc", "x", opt)
+	if err == nil {
+		t.Fatal("expected an error on 400 response")
+	}
+	if _, ok := err.(*InvalidArgumentError); !ok {
+		t.Errorf("expected *InvalidArgumentError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateEmptyVolume tests
+// ---------------------------------------------------------------------------
+
+func TestCreateEmptyVolume_Success(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		gotMethod string
+		gotPath   string
+		gotName   string
+		bodyLen   int
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotName = r.URL.Query().Get("name")
+		b, _ := io.ReadAll(r.Body)
+		bodyLen = len(b)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-e","name":"e","backend":"file","created_at":"2026-01-01T00:00:00Z"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	vol, err := CreateEmptyVolume(context.Background(), "e", opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/volumes/empty" {
+		t.Errorf("expected path /volumes/empty, got %s", gotPath)
+	}
+	if gotName != "e" {
+		t.Errorf("expected name='e', got %q", gotName)
+	}
+	if bodyLen != 0 {
+		t.Errorf("expected empty body, got %d bytes", bodyLen)
+	}
+	if vol.Backend != "file" {
+		t.Errorf("expected Backend='file', got %q", vol.Backend)
+	}
+}
+
+func TestCreateEmptyVolume_BackendUnavailable(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"file-granular backend not configured"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := CreateEmptyVolume(context.Background(), "e", opt)
+	if err == nil {
+		t.Fatal("expected an error on 503 response")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IngestVolume tests
+// ---------------------------------------------------------------------------
+
+func TestIngestVolume_Success(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		gotMethod string
+		gotPath   string
+		gotName   string
+		gotCT     string
+		rawBody   []byte
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotName = r.URL.Query().Get("name")
+		gotCT = r.Header.Get("Content-Type")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-i","name":"i","backend":"file","created_at":"2026-01-01T00:00:00Z"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	gz := makeGzipData(t, "archive")
+	vol, err := IngestVolume(context.Background(), "i", gz, opt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/volumes/ingest" {
+		t.Errorf("expected path /volumes/ingest, got %s", gotPath)
+	}
+	if gotName != "i" {
+		t.Errorf("expected name='i', got %q", gotName)
+	}
+	if gotCT != "application/gzip" {
+		t.Errorf("expected Content-Type application/gzip, got %q", gotCT)
+	}
+	if !bytes.Equal(rawBody, gz) {
+		t.Errorf("expected raw gzip body echoed, got %d bytes", len(rawBody))
+	}
+	if vol.VolumeID != "vol-i" {
+		t.Errorf("expected VolumeID='vol-i', got %q", vol.VolumeID)
+	}
+}
+
+func TestIngestVolume_RejectsNonGzip(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server should not be called for non-gzip data")
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := IngestVolume(context.Background(), "i", []byte("not-gzip"), opt)
+	if err == nil {
+		t.Fatal("expected an error for non-gzip data")
+	}
+	if !strings.Contains(err.Error(), "gzip") {
+		t.Errorf("expected gzip error, got %v", err)
+	}
+}
+
+func TestIngestVolume_QuotaExceeded(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"message":"quota exceeded"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := IngestVolume(context.Background(), "i", makeGzipData(t, "x"), opt)
+	if err == nil {
+		t.Fatal("expected an error on 413 response")
+	}
+	if _, ok := err.(*NotEnoughSpaceError); !ok {
+		t.Errorf("expected *NotEnoughSpaceError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CommitVolume tests
+// ---------------------------------------------------------------------------
+
+func TestCommitVolume_Success(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu        sync.Mutex
+		gotMethod string
+		gotPath   string
+		gotQuery  string
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query().Get("name")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"volume_id": "vol-new",
+			"owner_id": "owner-1",
+			"name": "snapshot",
+			"blob_key": "volumes/owner-1/vol-new",
+			"size_bytes": 2048,
+			"content_type": "application/gzip",
+			"created_at": "2026-01-01T00:00:00Z"
+		}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	vol, err := CommitVolume(context.Background(), "sbx-1", "vol-src", "snapshot", opt)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/sandboxes/sbx-1/volumes/vol-src/commit" {
+		t.Errorf("expected path /sandboxes/sbx-1/volumes/vol-src/commit, got %s", gotPath)
+	}
+	if gotQuery != "snapshot" {
+		t.Errorf("expected query name='snapshot', got %q", gotQuery)
+	}
+	if vol == nil {
+		t.Fatal("expected non-nil VolumeInfo")
+	}
+	if vol.VolumeID != "vol-new" {
+		t.Errorf("expected VolumeID='vol-new', got %q", vol.VolumeID)
+	}
+	if vol.Name != "snapshot" {
+		t.Errorf("expected Name='snapshot', got %q", vol.Name)
+	}
+	if vol.SizeBytes != 2048 {
+		t.Errorf("expected SizeBytes=2048, got %d", vol.SizeBytes)
+	}
+}
+
+func TestCommitVolume_NoName(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu          sync.Mutex
+		gotRawQuery string
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotRawQuery = r.URL.RawQuery
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"volume_id": "vol-new",
+			"owner_id": "owner-1",
+			"name": "src-commit",
+			"size_bytes": 0,
+			"created_at": "2026-01-01T00:00:00Z"
+		}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	vol, err := CommitVolume(context.Background(), "sbx-1", "vol-src", "", opt)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if gotRawQuery != "" {
+		t.Errorf("expected no query string when name is empty, got %q", gotRawQuery)
+	}
+	if vol.Name != "src-commit" {
+		t.Errorf("expected server-defaulted Name='src-commit', got %q", vol.Name)
+	}
+}
+
+func TestCommitVolume_NotAttached(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message": "volume is not attached to this sandbox"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := CommitVolume(context.Background(), "sbx-1", "vol-src", "", opt)
+	if err == nil {
+		t.Fatal("expected an error on 400 response")
+	}
+}
+
+func TestCommitVolume_SandboxPaused(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"message": "sandbox is paused; resume before commit"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := CommitVolume(context.Background(), "sbx-1", "vol-src", "", opt)
+	if err == nil {
+		t.Fatal("expected an error on 409 response")
+	}
+}
+
+func TestCommitVolume_SandboxNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "sandbox not found"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := CommitVolume(context.Background(), "sbx-missing", "vol-src", "", opt)
+	if err == nil {
+		t.Fatal("expected an error on 404 response")
+	}
+}
+
+func TestCommitVolume_ContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"volume_id":"vol-x"}`))
+	})
+
+	_, opt := volumeTestEnv(t, handler)
+
+	_, err := CommitVolume(ctx, "sbx-1", "vol-src", "", opt)
+	if err == nil {
+		t.Fatal("expected an error when context is already canceled")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListVolumes tests
 // ---------------------------------------------------------------------------

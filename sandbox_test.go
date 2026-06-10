@@ -379,6 +379,54 @@ func TestCreate_WithAllOptions(t *testing.T) {
 	}
 }
 
+func TestCreate_VolumeAttachmentModeSubpath(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sbx-1","envd_access_token":"t","sandbox_domain":"d"}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("DECLAW_API_KEY", "k")
+	t.Setenv("DECLAW_API_URL", srv.URL)
+
+	_, err := declaw.Create(context.Background(),
+		declaw.WithVolumes([]declaw.VolumeAttachment{
+			{VolumeID: "vol-mount", MountPath: "/live", Mode: declaw.VolumeModeMount, Subpath: "sub/dir"},
+			{VolumeID: "vol-copy", MountPath: "/data"},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vols, ok := capturedBody["volumes"].([]interface{})
+	if !ok || len(vols) != 2 {
+		t.Fatalf("expected 2 volumes in body, got %v", capturedBody["volumes"])
+	}
+
+	v0 := vols[0].(map[string]interface{})
+	if v0["volume_id"] != "vol-mount" || v0["mount_path"] != "/live" {
+		t.Errorf("unexpected v0: %v", v0)
+	}
+	if v0["mode"] != "mount" {
+		t.Errorf("expected mode='mount', got %v", v0["mode"])
+	}
+	if v0["subpath"] != "sub/dir" {
+		t.Errorf("expected subpath='sub/dir', got %v", v0["subpath"])
+	}
+
+	// Copy-mode (defaults) must omit mode and subpath.
+	v1 := vols[1].(map[string]interface{})
+	if _, present := v1["mode"]; present {
+		t.Errorf("expected mode omitted for default attach, got %v", v1["mode"])
+	}
+	if _, present := v1["subpath"]; present {
+		t.Errorf("expected subpath omitted for default attach, got %v", v1["subpath"])
+	}
+}
+
 func TestCreate_Error401(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)

@@ -29,11 +29,109 @@ func CreateVolume(ctx context.Context, name string, data []byte, opts ...Sandbox
 		return nil, fmt.Errorf("volume data must be a gzip-compressed tar archive (expected gzip magic bytes 0x1F 0x8B)")
 	}
 
-	respBody, err := client.postRaw(ctx, path, body)
+	respBody, err := client.postGzip(ctx, path, body)
 	if err != nil {
 		return nil, err
 	}
 
+	return parseVolumeInfo(respBody)
+}
+
+// CommitVolume captures the subtree at the attached volume's mount path inside
+// the given sandbox and creates a NEW volume from it. The source volume is left
+// unchanged. If name is empty, the server names the new volume "<source-name>-commit".
+// It returns the VolumeInfo of the newly created volume.
+func CommitVolume(ctx context.Context, sandboxID, volumeID, name string, opts ...SandboxOption) (*VolumeInfo, error) {
+	o := resolveSandboxOpts(opts)
+	cfg := configFromSandboxOpts(o)
+	client := newAPIClient(cfg)
+
+	path := fmt.Sprintf("/sandboxes/%s/volumes/%s/commit", sandboxID, volumeID)
+	if name != "" {
+		path += "?name=" + url.QueryEscape(name)
+	}
+
+	respBody, err := client.post(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseVolumeInfo(respBody)
+}
+
+// Volume attach modes for VolumeAttachment.Mode.
+const (
+	// VolumeModeCopy hydrates the volume into the sandbox at boot (default).
+	VolumeModeCopy = "copy"
+	// VolumeModeMount attaches the volume as a read-write live NFS mount.
+	VolumeModeMount = "mount"
+	// VolumeModeMountRO attaches the volume as a read-only live mount.
+	VolumeModeMountRO = "mount-ro"
+)
+
+// SnapshotVolume captures an arbitrary absolute path inside the given sandbox
+// into a NEW volume. path must be an absolute in-sandbox path; synthetic paths
+// such as /proc, /sys and /dev are rejected by the server. If name is empty the
+// server names the volume "snapshot". It returns the VolumeInfo of the newly
+// created volume.
+func SnapshotVolume(ctx context.Context, sandboxID, path, name string, opts ...SandboxOption) (*VolumeInfo, error) {
+	o := resolveSandboxOpts(opts)
+	cfg := configFromSandboxOpts(o)
+	client := newAPIClient(cfg)
+
+	q := url.Values{}
+	q.Set("path", path)
+	if name != "" {
+		q.Set("name", name)
+	}
+	reqPath := fmt.Sprintf("/sandboxes/%s/volumes/snapshot?%s", sandboxID, q.Encode())
+
+	respBody, err := client.post(ctx, reqPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseVolumeInfo(respBody)
+}
+
+// CreateEmptyVolume creates a new empty file-granular volume with the given
+// name. The server returns 503 if the file-granular backend is not configured.
+func CreateEmptyVolume(ctx context.Context, name string, opts ...SandboxOption) (*VolumeInfo, error) {
+	o := resolveSandboxOpts(opts)
+	cfg := configFromSandboxOpts(o)
+	client := newAPIClient(cfg)
+
+	path := "/volumes/empty?name=" + url.QueryEscape(name)
+	respBody, err := client.post(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseVolumeInfo(respBody)
+}
+
+// IngestVolume creates a new file-granular volume from a gzip-compressed tar
+// archive (data must begin with the gzip magic bytes 0x1F 0x8B). The server
+// returns 413 if the quota is exceeded, 400 for a bad archive, and 503 if the
+// file-granular backend is not configured.
+func IngestVolume(ctx context.Context, name string, data []byte, opts ...SandboxOption) (*VolumeInfo, error) {
+	o := resolveSandboxOpts(opts)
+	cfg := configFromSandboxOpts(o)
+	client := newAPIClient(cfg)
+
+	var body []byte
+	if data != nil {
+		body = data
+	} else {
+		body = []byte{}
+	}
+	if len(body) > 0 && (len(body) < 2 || body[0] != 0x1F || body[1] != 0x8B) {
+		return nil, fmt.Errorf("volume data must be a gzip-compressed tar archive (expected gzip magic bytes 0x1F 0x8B)")
+	}
+
+	path := "/volumes/ingest?name=" + url.QueryEscape(name)
+	respBody, err := client.postGzip(ctx, path, body)
+	if err != nil {
+		return nil, err
+	}
 	return parseVolumeInfo(respBody)
 }
 
@@ -108,6 +206,9 @@ type volumeInfoJSON struct {
 	ContentType string            `json:"content_type"`
 	CreatedAt   string            `json:"created_at"`
 	Metadata    map[string]string `json:"metadata"`
+	Backend     string            `json:"backend"`
+	QuotaBytes  int64             `json:"quota_bytes"`
+	UpdatedAt   string            `json:"updated_at"`
 }
 
 func (r *volumeInfoJSON) toVolumeInfo() VolumeInfo {
@@ -120,6 +221,9 @@ func (r *volumeInfoJSON) toVolumeInfo() VolumeInfo {
 		ContentType: r.ContentType,
 		CreatedAt:   r.CreatedAt,
 		Metadata:    r.Metadata,
+		Backend:     r.Backend,
+		QuotaBytes:  r.QuotaBytes,
+		UpdatedAt:   r.UpdatedAt,
 	}
 }
 

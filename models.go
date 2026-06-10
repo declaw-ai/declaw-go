@@ -121,18 +121,38 @@ type SandboxLifecycle struct {
 type VolumeAttachment struct {
 	VolumeID  string `json:"volume_id"`
 	MountPath string `json:"mount_path"`
+
+	// Mode controls how the volume is attached: "copy" (default, hydrated at
+	// boot), "mount" (read-write live NFS), or "mount-ro" (read-only live).
+	// Empty means the server default ("copy"). It is omitted from the wire
+	// request when empty.
+	Mode string `json:"mode,omitempty"`
+
+	// Subpath is a relative path within the volume to attach. It is valid only
+	// for live mounts ("mount"/"mount-ro"); the server rejects it for "copy"
+	// mode. It is omitted from the wire request when empty.
+	Subpath string `json:"subpath,omitempty"`
 }
 
 // VolumeInfo contains metadata about a persistent volume.
 type VolumeInfo struct {
-	VolumeID    string
-	OwnerID     string
-	Name        string
-	BlobKey     string
-	SizeBytes   int64
-	ContentType string
-	CreatedAt   string
-	Metadata    map[string]string
+	VolumeID    string            `json:"volume_id"`
+	OwnerID     string            `json:"owner_id"`
+	Name        string            `json:"name"`
+	BlobKey     string            `json:"blob_key"`
+	SizeBytes   int64             `json:"size_bytes"`
+	ContentType string            `json:"content_type"`
+	CreatedAt   string            `json:"created_at"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+
+	// Backend identifies the storage backend ("tarball" or file-granular).
+	Backend string `json:"backend"`
+
+	// QuotaBytes is the storage quota for the volume in bytes.
+	QuotaBytes int64 `json:"quota_bytes"`
+
+	// UpdatedAt is the ISO8601 timestamp of the last update.
+	UpdatedAt string `json:"updated_at"`
 }
 
 // TemplateSpec defines how to build a sandbox template.
