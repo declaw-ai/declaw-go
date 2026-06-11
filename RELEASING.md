@@ -48,7 +48,7 @@ synced via `git subtree split` (GH Actions sync is inactive — manual only).
    ```
 
 6. **Back in the monorepo**: commit the changelog as
-   `release(go-sdk): vX.Y.Z`, push `saas`, and update the version table in
+   `release(go-sdk): vX.Y.Z`, push `main`, and update the version table in
    `CLAUDE.md` + the docs capability matrix if this is part of a release train.
 
 ## Note on the CLI coupling
