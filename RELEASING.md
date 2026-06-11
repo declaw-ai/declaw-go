@@ -2,8 +2,9 @@
 
 Checklist for cutting a new release of `github.com/declaw-ai/declaw-go`.
 The public repo is a clean mirror of `declaw/go-sdk/` in the monorepo,
-synced automatically on every push to `main` touching `declaw/go-sdk/`
-(`sync-go-sdk.yml`, gated by junk/secret scans).
+updated by **snapshot sync**: `sync-mirror.yml` publishes the current tree
+as one commit with an operator-written message (gated by junk/secret
+scans) — internal commit history never leaves the monorepo.
 
 ## Prerequisites
 
@@ -28,15 +29,9 @@ synced automatically on every push to `main` touching `declaw/go-sdk/`
 
 3. **Sync the public mirror**
 
-   Automatic: pushing to `main` triggers `sync-go-sdk.yml`. Confirm it
-   ran green (`gh run list -w "Sync Go SDK → declaw-ai/declaw-go"`), or
-   trigger it manually (`gh workflow run sync-go-sdk.yml`). Manual
-   fallback from repo root:
-
    ```bash
-   git subtree split --prefix=declaw/go-sdk -b go-sdk-release
-   git push go-sdk go-sdk-release:main --force
-   git branch -D go-sdk-release
+   gh workflow run sync-mirror.yml -f component=go-sdk \
+     -f message="release: vX.Y.Z" && gh run watch
    ```
 
 4. **Tag on the public repo**

@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (Go module rules: `v0.x` — no stability promise yet).
 
-## [Unreleased]
+## [v0.4.0] — 2026-06
+
+_2026-06 train: file-granular volumes, OPA governance._
 
 ### Added
 
