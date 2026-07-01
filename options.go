@@ -8,6 +8,7 @@ type sandboxOpts struct {
 	Timeout        int
 	Metadata       map[string]string
 	Envs           map[string]string
+	VaultRefs      map[string]string
 	Secure         *bool
 	Network        *SandboxNetworkOpts
 	Security       *SecurityPolicy
@@ -47,6 +48,17 @@ func WithMetadata(m map[string]string) SandboxOption {
 func WithEnvs(e map[string]string) SandboxOption {
 	return func(o *sandboxOpts) {
 		o.Envs = e
+	}
+}
+
+// WithVaultRefs sets vault-backed env vars on the sandbox. Each entry maps an
+// env var name to a stored secret's NAME (e.g. "stripe-key"); the real value is
+// resolved server+worker-side and injected at the egress proxy, so it never
+// lands in the sandbox env. A value already in full "vault://…" form is passed
+// through unchanged.
+func WithVaultRefs(r map[string]string) SandboxOption {
+	return func(o *sandboxOpts) {
+		o.VaultRefs = r
 	}
 }
 

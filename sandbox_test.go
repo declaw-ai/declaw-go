@@ -265,6 +265,40 @@ func TestCreate_WithEnvs(t *testing.T) {
 	}
 }
 
+func TestCreate_WithVaultRefs(t *testing.T) {
+	var capturedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sbx-1","envd_access_token":"t","sandbox_domain":"d"}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("DECLAW_API_KEY", "k")
+	t.Setenv("DECLAW_API_URL", srv.URL)
+
+	_, err := declaw.Create(context.Background(),
+		declaw.WithVaultRefs(map[string]string{"STRIPE_KEY": "vault://team/prod/stripe"}),
+	)
+	if err != nil {
+		if err.Error() == "not implemented" {
+			return
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedBody == nil {
+		t.Fatal("expected body, got nil")
+	}
+	refs, ok := capturedBody["vault_refs"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected vault_refs map, got %T", capturedBody["vault_refs"])
+	}
+	if refs["STRIPE_KEY"] != "vault://team/prod/stripe" {
+		t.Errorf("expected vault_refs.STRIPE_KEY=vault://team/prod/stripe, got %v", refs["STRIPE_KEY"])
+	}
+}
+
 func TestCreate_WithNetwork(t *testing.T) {
 	var capturedBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

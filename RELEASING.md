@@ -31,7 +31,7 @@ scans) — internal commit history never leaves the monorepo.
 
    ```bash
    gh workflow run sync-mirror.yml -f component=go-sdk \
-     -f message="release: vX.Y.Z" && gh run watch
+     -f message="release(go-sdk): vX.Y.Z" && gh run watch
    ```
 
 4. **Tag on the public repo**
@@ -51,6 +51,16 @@ scans) — internal commit history never leaves the monorepo.
 6. **Back in the monorepo**: commit the changelog as
    `release(go-sdk): vX.Y.Z`, push `main`, and update the version table in
    `CLAUDE.md` + the docs capability matrix if this is part of a release train.
+
+## A tag here is permanent
+
+There is no workflow between the tag and the release: the Go module proxy
+typically fetches and caches a new tag within minutes, and the proxy cache
+plus the checksum database make it effectively immutable. **Never delete or
+move a go-sdk tag once pushed.** Verify the synced mirror *before* tagging
+(step 4 happens after step 3 for a reason). If a bad version ships anyway:
+cut a new patch version and add a `retract` directive for the bad one in
+`go.mod`.
 
 ## Note on the CLI coupling
 

@@ -814,7 +814,6 @@ func TestRequiresTLSInterception_AllDisabledNoTransformations(t *testing.T) {
 
 func TestSecurityPolicy_ToJSON_ReturnsMap(t *testing.T) {
 
-
 	policy := &SecurityPolicy{
 		PII: &PIIConfig{
 			Enabled: true,
@@ -842,8 +841,45 @@ func TestSecurityPolicy_ToJSON_ReturnsMap(t *testing.T) {
 	}
 }
 
-func TestSecurityPolicy_ToJSON_PIIFields(t *testing.T) {
+func TestSecurityPolicy_InjectionDomains_RoundTrip(t *testing.T) {
+	domains := []string{"api.openai.com", "*.internal.example", `~.*\.corp$`}
+	policy := &SecurityPolicy{
+		InjectionDefense: &InjectionDefenseConfig{
+			Enabled: true, Action: InjectionActionBlock, Domains: domains,
+		},
+	}
+	inj, ok := policy.ToJSON()["injection_defense"].(map[string]interface{})
+	if !ok {
+		t.Fatal("injection_defense should be a map")
+	}
+	if _, ok := inj["domains"]; !ok {
+		t.Fatal("injection_defense.domains should be serialized when set")
+	}
+	parsed := ParseSecurityPolicy(policy.ToJSON())
+	if parsed.InjectionDefense == nil {
+		t.Fatal("round-trip lost InjectionDefense")
+	}
+	if len(parsed.InjectionDefense.Domains) != len(domains) {
+		t.Fatalf("round-trip domains = %v, want %v", parsed.InjectionDefense.Domains, domains)
+	}
+	for i, d := range domains {
+		if parsed.InjectionDefense.Domains[i] != d {
+			t.Errorf("domain[%d] = %q, want %q", i, parsed.InjectionDefense.Domains[i], d)
+		}
+	}
+}
 
+func TestSecurityPolicy_InjectionDomains_OmittedWhenEmpty(t *testing.T) {
+	// Opt-in: an empty domain list is omitted from the wire (and means no
+	// injection scanning server-side).
+	policy := &SecurityPolicy{InjectionDefense: &InjectionDefenseConfig{Enabled: true, Action: InjectionActionBlock}}
+	inj := policy.ToJSON()["injection_defense"].(map[string]interface{})
+	if _, ok := inj["domains"]; ok {
+		t.Error("injection_defense.domains should be omitted when empty")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_PIIFields(t *testing.T) {
 
 	policy := &SecurityPolicy{
 		PII: &PIIConfig{
@@ -873,7 +909,6 @@ func TestSecurityPolicy_ToJSON_PIIFields(t *testing.T) {
 
 func TestSecurityPolicy_ToJSON_NilSubConfigs(t *testing.T) {
 
-
 	policy := &SecurityPolicy{}
 	result := policy.ToJSON()
 
@@ -884,7 +919,6 @@ func TestSecurityPolicy_ToJSON_NilSubConfigs(t *testing.T) {
 }
 
 func TestSecurityPolicy_ToJSON_Transformations(t *testing.T) {
-
 
 	policy := &SecurityPolicy{
 		Transformations: []TransformationRule{
@@ -904,7 +938,6 @@ func TestSecurityPolicy_ToJSON_Transformations(t *testing.T) {
 }
 
 func TestSecurityPolicy_ToJSON_AllScanners(t *testing.T) {
-
 
 	policy := &SecurityPolicy{
 		Toxicity:      &ToxicityConfig{Enabled: true, Threshold: 0.8},
@@ -928,7 +961,6 @@ func TestSecurityPolicy_ToJSON_AllScanners(t *testing.T) {
 
 func TestParseSecurityPolicy_BasicMap(t *testing.T) {
 
-
 	data := map[string]interface{}{
 		"pii": map[string]interface{}{
 			"enabled": true,
@@ -951,7 +983,6 @@ func TestParseSecurityPolicy_BasicMap(t *testing.T) {
 
 func TestParseSecurityPolicy_NilFields(t *testing.T) {
 
-
 	data := map[string]interface{}{}
 	policy := ParseSecurityPolicy(data)
 
@@ -967,7 +998,6 @@ func TestParseSecurityPolicy_NilFields(t *testing.T) {
 }
 
 func TestParseSecurityPolicy_FullRoundTrip(t *testing.T) {
-
 
 	original := &SecurityPolicy{
 		PII: &PIIConfig{
@@ -1046,7 +1076,6 @@ func TestParseSecurityPolicy_FullRoundTrip(t *testing.T) {
 
 func TestParseSecurityPolicy_MissingOptionalFields(t *testing.T) {
 
-
 	// Only PII present, everything else missing
 	data := map[string]interface{}{
 		"pii": map[string]interface{}{
@@ -1070,7 +1099,6 @@ func TestParseSecurityPolicy_MissingOptionalFields(t *testing.T) {
 }
 
 func TestParseSecurityPolicy_NullValues(t *testing.T) {
-
 
 	data := map[string]interface{}{
 		"pii":               nil,
@@ -1676,8 +1704,8 @@ func TestContentGate_RoundTrip_DisabledNoDomains(t *testing.T) {
 
 func TestContentGate_RoundTrip_WithOtherPolicies(t *testing.T) {
 	original := &SecurityPolicy{
-		Toxicity:    &ToxicityConfig{Enabled: true, Threshold: 0.9},
-		ContentGate: &ContentGateConfig{Enabled: true, Domains: []string{"api.openai.com"}},
+		Toxicity:      &ToxicityConfig{Enabled: true, Threshold: 0.9},
+		ContentGate:   &ContentGateConfig{Enabled: true, Domains: []string{"api.openai.com"}},
 		InvisibleText: &InvisibleTextConfig{Enabled: true, DetectZeroWidth: true},
 	}
 	serialized := original.ToJSON()
@@ -1697,5 +1725,139 @@ func TestContentGate_RoundTrip_WithOtherPolicies(t *testing.T) {
 	}
 	if len(restored.ContentGate.Domains) != 1 {
 		t.Errorf("ContentGate.Domains length = %d, want 1", len(restored.ContentGate.Domains))
+	}
+}
+
+// --- InjectionMode field ---
+
+func TestInjectionDefenseConfig_InjectionMode_ZeroValue(t *testing.T) {
+	var cfg InjectionDefenseConfig
+	if cfg.InjectionMode != "" {
+		t.Errorf("zero InjectionMode = %q, want empty", cfg.InjectionMode)
+	}
+}
+
+func TestInjectionDefenseConfig_InjectionMode_Set(t *testing.T) {
+	cfg := InjectionDefenseConfig{
+		Enabled:       true,
+		InjectionMode: "strict",
+	}
+	if cfg.InjectionMode != "strict" {
+		t.Errorf("InjectionMode = %q, want %q", cfg.InjectionMode, "strict")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_InjectionMode_Present(t *testing.T) {
+	policy := &SecurityPolicy{
+		InjectionDefense: &InjectionDefenseConfig{
+			Enabled:       true,
+			InjectionMode: "agentic-tool",
+		},
+	}
+	result := policy.ToJSON()
+	injRaw, ok := result["injection_defense"].(map[string]interface{})
+	if !ok {
+		t.Fatal("injection_defense should be a map")
+	}
+	if injRaw["injection_mode"] != "agentic-tool" {
+		t.Errorf("injection_mode = %v, want %q", injRaw["injection_mode"], "agentic-tool")
+	}
+}
+
+func TestSecurityPolicy_ToJSON_InjectionMode_OmittedWhenEmpty(t *testing.T) {
+	policy := &SecurityPolicy{
+		InjectionDefense: &InjectionDefenseConfig{
+			Enabled: true,
+			// InjectionMode deliberately empty
+		},
+	}
+	result := policy.ToJSON()
+	injRaw, ok := result["injection_defense"].(map[string]interface{})
+	if !ok {
+		t.Fatal("injection_defense should be a map")
+	}
+	if _, exists := injRaw["injection_mode"]; exists {
+		t.Error("injection_mode key must be absent when InjectionMode is empty")
+	}
+}
+
+func TestInjectionMode_RoundTrip(t *testing.T) {
+	modes := []string{"strict", "balanced", "permissive", "agentic-tool", "data-egress-sensitive"}
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			original := &SecurityPolicy{
+				InjectionDefense: &InjectionDefenseConfig{
+					Enabled:       true,
+					Sensitivity:   InjectionSensitivityHigh,
+					InjectionMode: mode,
+				},
+			}
+			serialized := original.ToJSON()
+			restored := ParseSecurityPolicy(serialized)
+			if restored.InjectionDefense == nil {
+				t.Fatal("InjectionDefense nil after round-trip")
+			}
+			if restored.InjectionDefense.InjectionMode != mode {
+				t.Errorf("InjectionMode = %q, want %q", restored.InjectionDefense.InjectionMode, mode)
+			}
+		})
+	}
+}
+
+func TestParseSecurityPolicy_InjectionMode(t *testing.T) {
+	data := map[string]interface{}{
+		"injection_defense": map[string]interface{}{
+			"enabled":        true,
+			"injection_mode": "data-egress-sensitive",
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.InjectionDefense == nil {
+		t.Fatal("InjectionDefense should not be nil")
+	}
+	if policy.InjectionDefense.InjectionMode != "data-egress-sensitive" {
+		t.Errorf("InjectionMode = %q, want %q", policy.InjectionDefense.InjectionMode, "data-egress-sensitive")
+	}
+}
+
+func TestParseSecurityPolicy_InjectionMode_Absent(t *testing.T) {
+	data := map[string]interface{}{
+		"injection_defense": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+	policy := ParseSecurityPolicy(data)
+	if policy.InjectionDefense == nil {
+		t.Fatal("InjectionDefense should not be nil")
+	}
+	if policy.InjectionDefense.InjectionMode != "" {
+		t.Errorf("InjectionMode should be empty when absent, got %q", policy.InjectionDefense.InjectionMode)
+	}
+}
+
+func TestFullInjectionDefensePolicy(t *testing.T) {
+	p := FullInjectionDefensePolicy(FullInjectionDefenseOptions{
+		AgentPolicy: "summarize", Mode: "data-egress-sensitive", AlwaysJudge: true,
+		Domains: []string{"api.openai.com"},
+	})
+	if p.InjectionDefense == nil || !p.InjectionDefense.Enabled {
+		t.Fatal("injection defense not enabled")
+	}
+	if len(p.InjectionDefense.Domains) != 1 || p.InjectionDefense.Domains[0] != "api.openai.com" {
+		t.Fatalf("Domains not threaded through: %v", p.InjectionDefense.Domains)
+	}
+	if p.InjectionDefense.InjectionMode != "data-egress-sensitive" {
+		t.Fatalf("mode = %q", p.InjectionDefense.InjectionMode)
+	}
+	if p.InjectionDefense.Judge == nil || !p.InjectionDefense.Judge.Enabled || !p.InjectionDefense.Judge.Always {
+		t.Fatal("judge not enabled/always")
+	}
+	if p.CustomPolicy == nil || p.CustomPolicy.PolicyRef != "prompt-injection@v3" {
+		t.Fatal("prompt-injection pack not referenced")
+	}
+	// Defaults: balanced posture, block action.
+	d := FullInjectionDefensePolicy(FullInjectionDefenseOptions{})
+	if d.InjectionDefense.InjectionMode != "balanced" || d.InjectionDefense.Action != InjectionActionBlock {
+		t.Fatalf("defaults wrong: mode=%q action=%q", d.InjectionDefense.InjectionMode, d.InjectionDefense.Action)
 	}
 }

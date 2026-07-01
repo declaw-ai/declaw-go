@@ -83,6 +83,7 @@ type createRequest struct {
 	Timeout   int                    `json:"timeout"`
 	Metadata  map[string]string      `json:"metadata,omitempty"`
 	Envs      map[string]string      `json:"envs,omitempty"`
+	VaultRefs map[string]string      `json:"vault_refs,omitempty"`
 	Secure    *bool                  `json:"secure,omitempty"`
 	Network   *SandboxNetworkOpts    `json:"network,omitempty"`
 	Security  map[string]interface{} `json:"security,omitempty"`
@@ -115,11 +116,20 @@ func Create(ctx context.Context, opts ...SandboxOption) (*Sandbox, error) {
 		timeout = 300
 	}
 
+	// Expand bare vault_refs secret names → vault://<default-team>/<env>/<name>
+	// (team/env are resolved automatically; values already in vault:// form pass
+	// through unchanged).
+	vaultRefs, err := expandVaultRefs(ctx, client, o.VaultRefs)
+	if err != nil {
+		return nil, err
+	}
+
 	body := createRequest{
 		Template:  template,
 		Timeout:   timeout,
 		Metadata:  o.Metadata,
 		Envs:      o.Envs,
+		VaultRefs: vaultRefs,
 		Secure:    o.Secure,
 		Network:   o.Network,
 		Lifecycle: o.Lifecycle,

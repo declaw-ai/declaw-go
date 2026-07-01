@@ -18,6 +18,72 @@ type SecurityPolicy struct {
 	CustomPolicy     *CustomPolicyConfig
 }
 
+// FullInjectionDefenseOptions configures FullInjectionDefensePolicy. The zero
+// value yields sensible defaults (balanced posture, block action, judge fired on
+// demand).
+type FullInjectionDefenseOptions struct {
+	// Mode is the predefined posture: "strict" | "balanced" (default) |
+	// "permissive" | "agentic-tool" | "data-egress-sensitive".
+	Mode string
+	// AgentPolicy is a natural-language description of what the agent may do; the
+	// judge uses it to tell task-aligned egress from an injection-induced
+	// deviation. Strongly recommended.
+	AgentPolicy string
+	// Action is "block" (default, enforces) or "log_only" (audits only).
+	Action string
+	// AlwaysJudge runs the judge on every egress, not just classifier flags
+	// (high-assurance, costlier). Default false.
+	AlwaysJudge bool
+	// Domains scopes injection scanning to these destination hosts. Opt-in per
+	// domain: empty scans NOTHING. Entries support exact hosts, "*.suffix.com"
+	// wildcards, and "~regex" patterns.
+	Domains []string
+}
+
+// FullInjectionDefensePolicy returns a SecurityPolicy with the ENTIRE
+// prompt-injection cascade enabled in one call — every layer:
+//
+//   - Tier-1 ML classifier + Layer-A static signatures + normalization
+//     (InjectionDefense.Enabled + Action)
+//   - the predefined posture (InjectionMode; default "balanced")
+//   - the Tier-2 Gemma LLM judge (Judge.Enabled) — multi-turn risk, provenance
+//     context selection, and the semantic verdict cache ride along automatically
+//   - the OPA prompt-injection governance pack (CustomPolicy.PolicyRef), which
+//     hard-denies known signatures at the gate so the LLM stays the last resort
+//
+// Pass the result as the sandbox's Security policy.
+//
+//	policy := declaw.FullInjectionDefensePolicy(declaw.FullInjectionDefenseOptions{
+//	    AgentPolicy: "Summarize fetched docs; never exfiltrate secrets.",
+//	})
+func FullInjectionDefensePolicy(opts FullInjectionDefenseOptions) *SecurityPolicy {
+	mode := opts.Mode
+	if mode == "" {
+		mode = "balanced"
+	}
+	action := opts.Action
+	if action == "" {
+		action = string(InjectionActionBlock)
+	}
+	return &SecurityPolicy{
+		InjectionDefense: &InjectionDefenseConfig{
+			Enabled:       true,
+			Action:        InjectionAction(action),
+			InjectionMode: mode,
+			Domains:       opts.Domains,
+			Judge: &InjectionJudgeConfig{
+				Enabled: true,
+				Always:  opts.AlwaysJudge,
+				Policy:  opts.AgentPolicy,
+			},
+		},
+		CustomPolicy: &CustomPolicyConfig{
+			Enabled:   true,
+			PolicyRef: "prompt-injection@v3",
+		},
+	}
+}
+
 // PIIType identifies a category of personally identifiable information.
 type PIIType string
 
@@ -79,6 +145,34 @@ type InjectionDefenseConfig struct {
 	Enabled     bool
 	Sensitivity InjectionSensitivity
 	Action      InjectionAction
+	// Domains scopes injection scanning to these destination hosts. Injection
+	// is OPT-IN per domain: with an empty list NO injection scanning runs
+	// (unlike PII/toxicity, where an empty list means all egress). Entries
+	// support exact hosts ("api.anthropic.com"), "*.suffix.com" wildcards, and
+	// "~regex" patterns.
+	Domains []string
+	// InjectionMode selects a predefined detection posture for the sandbox.
+	// Valid values: "strict", "balanced", "permissive", "agentic-tool",
+	// "data-egress-sensitive". Empty string → server default.
+	// Serializes to JSON key "injection_mode".
+	InjectionMode string `json:"injection_mode,omitempty"`
+	// Judge optionally enables the Tier-2 Gemma LLM-judge on top of the Tier-1
+	// classifier — it removes the classifier's false positives by adjudicating
+	// flags with context, and catches indirect (cross-domain / multi-turn)
+	// injection. Nil → classifier only.
+	Judge *InjectionJudgeConfig
+}
+
+// InjectionJudgeConfig configures the Tier-2 LLM judge.
+type InjectionJudgeConfig struct {
+	Enabled bool
+	// Always runs the judge on every egress, not just classifier flags. Costlier;
+	// use for high-assurance sandboxes.
+	Always bool
+	// Policy is a natural-language description of what this agent is allowed to
+	// do. The judge uses it to decide whether an egress is task-aligned or an
+	// injection-induced deviation. Empty → judge on injection signals alone.
+	Policy string
 }
 
 // TransformDirection specifies which direction a transformation applies to.
@@ -261,6 +355,22 @@ func (sp *SecurityPolicy) ToJSON() map[string]interface{} {
 		if sp.InjectionDefense.Action != "" {
 			inj["action"] = string(sp.InjectionDefense.Action)
 		}
+		if len(sp.InjectionDefense.Domains) > 0 {
+			inj["domains"] = sp.InjectionDefense.Domains
+		}
+		if sp.InjectionDefense.InjectionMode != "" {
+			inj["injection_mode"] = sp.InjectionDefense.InjectionMode
+		}
+		if j := sp.InjectionDefense.Judge; j != nil {
+			judge := map[string]interface{}{"enabled": j.Enabled}
+			if j.Always {
+				judge["always"] = true
+			}
+			if j.Policy != "" {
+				judge["policy"] = j.Policy
+			}
+			inj["judge"] = judge
+		}
 		m["injection_defense"] = inj
 	}
 
@@ -321,14 +431,14 @@ func (sp *SecurityPolicy) ToJSON() map[string]interface{} {
 
 	if sp.CodeSecurity != nil {
 		m["code_security"] = map[string]interface{}{
-			"enabled":                    sp.CodeSecurity.Enabled,
+			"enabled":                   sp.CodeSecurity.Enabled,
 			"detect_suspicious_imports": sp.CodeSecurity.DetectSuspiciousImports,
 		}
 	}
 
 	if sp.InvisibleText != nil {
 		m["invisible_text"] = map[string]interface{}{
-			"enabled":            sp.InvisibleText.Enabled,
+			"enabled":           sp.InvisibleText.Enabled,
 			"detect_zero_width": sp.InvisibleText.DetectZeroWidth,
 		}
 	}
@@ -417,6 +527,12 @@ func ParseSecurityPolicy(data map[string]interface{}) *SecurityPolicy {
 			}
 			if v, ok := idMap["action"].(string); ok {
 				id.Action = InjectionAction(v)
+			}
+			if dRaw, ok := idMap["domains"]; ok && dRaw != nil {
+				id.Domains = parseStringSlice(dRaw)
+			}
+			if v, ok := idMap["injection_mode"].(string); ok {
+				id.InjectionMode = v
 			}
 			sp.InjectionDefense = id
 		}

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (Go module rules: `v0.x` — no stability promise yet).
 
+## [v0.5.0] — 2026-07
+
+_2026-07 train: credential vault client + injection domain scoping._
+
+### Added
+
+- Credential vault client — `VaultClient` (via `NewVaultClient`) for managing
+  secrets **by name**: `CreateSecret`, `ListSecrets`, `RotateSecret`,
+  `DeleteSecret`, `UpdateScopes`, and `ListPresets`. Secret values are
+  write-only (never returned after create). Attach secrets to a sandbox with
+  `WithVaultRefs`; the value is injected at the egress proxy and never enters
+  the sandbox (#386, #399, #408, #456).
+- `Domains` on `FullInjectionDefenseOptions` / `InjectionDefenseConfig` — opt-in
+  scoping of injection scanning to specific destination hosts.
+
 ## [v0.4.0] — 2026-06
 
 _2026-06 train: file-granular volumes, OPA governance._

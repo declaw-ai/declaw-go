@@ -168,6 +168,11 @@ func NewTestAccountClientWithOwner(client *apiClient, ownerID string) *AccountCl
 	return &AccountClient{client: client, ownerID: ownerID}
 }
 
+// NewTestVaultClient creates a VaultClient for testing with a given apiClient.
+func NewTestVaultClient(client *apiClient) *VaultClient {
+	return &VaultClient{client: client}
+}
+
 // GetOwnerID returns the ownerID cached on an AccountClient (for test assertions).
 func (a *AccountClient) GetOwnerID() string {
 	return a.ownerID
