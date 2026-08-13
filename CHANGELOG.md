@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (Go module rules: `v0.x` — no stability promise yet).
 
+## [v0.6.0] — 2026-08
+
+_2026-08 train: idempotent sandbox creation._
+
+### Added
+
+- `Sandbox.Create` now sends an `Idempotency-Key`. A create that times out or is
+  retried no longer risks leaving a second running, billable sandbox the caller
+  has no handle for. The key is generated once per logical create and reused
+  across that call's retries, so a retry replays the original response instead
+  of starting a new sandbox.
+- A `409` carrying `idempotency_in_progress` is retried automatically, honoring
+  `Retry-After`. This is how a caller recovers the sandbox ID when the original
+  response was lost.
+- `SandboxError.Code` exposes the API's machine-readable error code, with
+  `CodeIdempotencyInProgress`, `CodeIdempotencyKeyReused` and
+  `CodeTemplateNotReady` naming the ones that matter. Branch on the code, never
+  the message — `409` means two unrelated things on this endpoint and only one
+  of them is retryable.
+
+### Changed
+
+- Retry backoff is jittered. It was `delay x attempt` exactly, so clients that
+  failed together retried in lockstep and the server saw the same herd on every
+  round.
+
 ## [v0.5.0] — 2026-07
 
 _2026-07 train: credential vault client + injection domain scoping._

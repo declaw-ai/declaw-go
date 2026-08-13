@@ -139,7 +139,19 @@ func Create(ctx context.Context, opts ...SandboxOption) (*Sandbox, error) {
 		body.Security = o.Security.ToJSON()
 	}
 
-	data, err := client.post(ctx, "/sandboxes", body)
+	// One key per LOGICAL create, generated here and reused across every retry
+	// inside doRequest. Generating it per attempt would defeat the mechanism
+	// entirely: the server would treat each retry as a new create, which is the
+	// duplicate-sandbox bug this exists to fix.
+	//
+	// An empty key (CSPRNG failure) sends no header, leaving behavior exactly as
+	// it was before idempotency existed.
+	var postOpts []reqOpt
+	if key := newIdempotencyKey(); key != "" {
+		postOpts = append(postOpts, withHeader("Idempotency-Key", key))
+	}
+
+	data, err := client.post(ctx, "/sandboxes", body, postOpts...)
 	if err != nil {
 		return nil, err
 	}

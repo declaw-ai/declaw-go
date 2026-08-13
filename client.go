@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -39,7 +42,56 @@ func newAPIClient(config *Config) *apiClient {
 	}
 }
 
-func (c *apiClient) doRequest(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, error) {
+// reqOpt mutates an outgoing request. Variadic so the existing doRequest callers
+// need no change.
+type reqOpt func(*http.Request)
+
+// withHeader sets a header on the request.
+func withHeader(k, v string) reqOpt {
+	return func(r *http.Request) { r.Header.Set(k, v) }
+}
+
+// retryJitter spreads a retry delay so clients that failed together do not all
+// come back at the same instant. Equal jitter: keep half the backoff to preserve
+// growth, randomize the other half to break the lockstep.
+//
+// Without it every client retries at exactly delay x attempt, so a blip that
+// trips N clients produces N simultaneous retries, then N more — the server sees
+// the same thundering herd on each round instead of a spread.
+func retryJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int63n(int64(half)+1))
+}
+
+// retryAfter reads a Retry-After header expressed in seconds.
+//
+// The bool distinguishes "absent or unparseable" (caller falls back to its own
+// backoff) from a genuine Retry-After: 0 meaning retry immediately. Returning a
+// bare 0 for both conflates them, and the Python and TS clients keep that
+// distinction — a train whose members disagree on a wire behavior is worse than
+// one that is uniformly wrong.
+//
+// The HTTP-date form is deliberately unsupported: this API does not emit it, and
+// guessing wrong would sleep for hours.
+func retryAfter(resp *http.Response) (time.Duration, bool) {
+	v := resp.Header.Get("Retry-After")
+	if v == "" {
+		return 0, false
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0, false
+	}
+	if secs > 60 {
+		secs = 60 // never let a server pin a client for minutes
+	}
+	return time.Duration(secs) * time.Second, true
+}
+
+func (c *apiClient) doRequest(ctx context.Context, method, path string, body io.Reader, contentType string, opts ...reqOpt) ([]byte, error) {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -50,10 +102,19 @@ func (c *apiClient) doRequest(ctx context.Context, method, path string, body io.
 	}
 
 	var lastErr error
+	// pending carries a server-supplied Retry-After into the next iteration.
+	// pendingSet is separate so a Retry-After of 0 ("come back now") is not read
+	// as "no header".
+	var pending time.Duration
+	var pendingSet bool
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
-			delay := c.retryDelay * time.Duration(attempt)
+			delay := retryJitter(c.retryDelay * time.Duration(attempt))
+			if pendingSet {
+				delay = pending // server told us when to come back
+				pending, pendingSet = 0, false
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -78,6 +139,9 @@ func (c *apiClient) doRequest(ctx context.Context, method, path string, body io.
 		}
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
+		}
+		for _, opt := range opts {
+			opt(req)
 		}
 
 		resp, err := c.httpClient.Do(req)
@@ -105,7 +169,24 @@ func (c *apiClient) doRequest(ctx context.Context, method, path string, body io.
 			continue
 		}
 
-		return nil, errorFromResponse(resp, respBody, "")
+		err = errorFromResponse(resp, respBody, "")
+
+		// A 409 carrying idempotency_in_progress means the ORIGINAL create is
+		// still running and this key already owns it. Retrying the identical
+		// request is not a duplicate — it is how the caller recovers the sandbox
+		// ID when the first response was lost, which is the whole point of
+		// sending the key. Branch on the code, never the status: 409 on this
+		// endpoint also means template_not_ready, which retrying cannot fix.
+		if resp.StatusCode == http.StatusConflict && attempt < c.maxRetries {
+			var se *SandboxError
+			if errors.As(err, &se) && se.Code == CodeIdempotencyInProgress {
+				pending, pendingSet = retryAfter(resp)
+				lastErr = err
+				continue
+			}
+		}
+
+		return nil, err
 	}
 
 	if lastErr != nil {
@@ -131,7 +212,7 @@ func (c *apiClient) get(ctx context.Context, path string) ([]byte, error) {
 }
 
 // post performs an HTTP POST request with a JSON body.
-func (c *apiClient) post(ctx context.Context, path string, body interface{}) ([]byte, error) {
+func (c *apiClient) post(ctx context.Context, path string, body interface{}, opts ...reqOpt) ([]byte, error) {
 	r, err := c.jsonBody(body)
 	if err != nil {
 		return nil, err
@@ -140,7 +221,7 @@ func (c *apiClient) post(ctx context.Context, path string, body interface{}) ([]
 	if body != nil {
 		ct = "application/json"
 	}
-	return c.doRequest(ctx, http.MethodPost, path, r, ct)
+	return c.doRequest(ctx, http.MethodPost, path, r, ct, opts...)
 }
 
 // postRaw performs an HTTP POST request with a raw binary body.

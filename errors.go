@@ -18,6 +18,16 @@ type SandboxError struct {
 
 	// StatusCode is the HTTP status code from the API response, if applicable.
 	StatusCode int
+
+	// Code is the API's machine-readable error code (the "code" field of the
+	// error body), empty when the response carried none.
+	//
+	// Branch on this, never on Message. Messages are prose and change; codes are
+	// contract. It matters most where one status means several unrelated things:
+	// 409 on POST /sandboxes is either "idempotency_in_progress" (the original
+	// create is still running — retry the identical request) or
+	// "template_not_ready" (rebuild the template — retrying is pointless).
+	Code string
 }
 
 // Error implements the error interface.
@@ -175,6 +185,7 @@ func errorFromResponse(resp *http.Response, body []byte, sandboxID string) error
 
 	var parsed struct {
 		Message string `json:"message"`
+		Code    string `json:"code"`
 	}
 	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
 		msg = parsed.Message
@@ -184,6 +195,7 @@ func errorFromResponse(resp *http.Response, body []byte, sandboxID string) error
 		Message:    msg,
 		SandboxID:  sandboxID,
 		StatusCode: resp.StatusCode,
+		Code:       parsed.Code,
 	}
 
 	switch resp.StatusCode {
