@@ -157,6 +157,11 @@ type VolumeInfo struct {
 
 // TemplateSpec defines how to build a sandbox template.
 type TemplateSpec struct {
+	// Alias names the template; sandboxes are created from it with
+	// WithTemplate(Alias). Required: lowercase letters, digits and hyphens,
+	// and not the name of a built-in template.
+	Alias string
+
 	// BaseImage is the base Docker/rootfs image name.
 	BaseImage string
 
@@ -164,9 +169,13 @@ type TemplateSpec struct {
 	RunCmds []string
 
 	// Copies are files to copy into the template.
+	//
+	// Not supported yet: a template build cannot upload local files, so
+	// BuildTemplate and BuildTemplateBackground reject a spec that sets it.
 	Copies []CopyItem
 
-	// Envs are environment variables baked into the template.
+	// Envs are environment variables set for commands run in sandboxes created
+	// from the template. A sandbox's own envs win on conflict.
 	Envs map[string]string
 
 	// AptPackages are apt packages to install during build.
@@ -192,8 +201,12 @@ type CopyItem struct {
 // BuildInfo describes the status of a template build.
 type BuildInfo struct {
 	BuildID    string
-	Status     string // "queued", "building", "success", or "failed"
+	Status     string // BuildStatusBuilding, BuildStatusCompleted or BuildStatusFailed
 	TemplateID string
+
+	// Logs is the build output so far. The response to starting a build
+	// carries none; GetBuildStatus and BuildTemplate fill it.
+	Logs []string
 }
 
 // TemplateInfo contains metadata about a template.

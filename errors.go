@@ -83,6 +83,11 @@ func (e *TemplateError) Unwrap() error { return e.SandboxError }
 // BuildError is returned when a template build fails.
 type BuildError struct {
 	*SandboxError
+
+	// BuildID and Logs identify the failed build and hold its full output,
+	// when the error comes from a build that ran (BuildTemplate).
+	BuildID string
+	Logs    []string
 }
 
 func (e *BuildError) Unwrap() error { return e.SandboxError }

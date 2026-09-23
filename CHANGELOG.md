@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (Go module rules: `v0.x` — no stability promise yet).
 
+## [v0.7.0] — 2026-09
+
+_2026-09 train: working template builds._
+
+### Added
+
+- `WaitForBuild(ctx, buildID, onLog)` follows a build started with
+  `BuildTemplateBackground` to the end, passing each new line of build output
+  to `onLog`. The server keeps the newest 2,000 lines of a build's output; if
+  more arrive between two status checks, a
+  `... [earlier build output truncated]` line marks the gap.
+- `BuildStatusBuilding`, `BuildStatusCompleted` and `BuildStatusFailed`,
+  `BuildInfo.Logs`, and `BuildError.BuildID` / `BuildError.Logs`.
+- Status checks that fail temporarily while waiting (5xx, 408, 429, network
+  errors) are retried for up to two minutes instead of ending the wait.
+
+### Changed
+
+- `BuildTemplate` now waits for the build to finish, as documented; bound the
+  wait with `ctx`. A failed build returns a `*BuildError` carrying the build's
+  ID and output. If `ctx` ends first, the build keeps running and the returned
+  `BuildInfo` still carries its ID, so `WaitForBuild` can pick it up.
+- A spec with `Copies` now returns an `*InvalidArgumentError` before anything
+  is sent. Copying local files never worked, because a build cannot upload
+  them. Fetch files in a `RunCmds` step, or use a `Dockerfile`.
+
+### Fixed
+
+- `BuildTemplate` and `BuildTemplateBackground` sent a request the API
+  rejects, so every template build failed with `alias is required`. The
+  template is now built under `TemplateSpec.Alias` (new, required); create
+  sandboxes from it with `WithTemplate(alias)`.
+- `TemplateSpec.AptPackages` are now installed; they were sent under a name
+  the API ignores.
+
 ## [v0.6.0] — 2026-08
 
 _2026-08 train: idempotent sandbox creation._
