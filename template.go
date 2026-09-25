@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -296,6 +297,7 @@ func newBuildFailedError(info *BuildInfo) error {
 	return &BuildError{
 		SandboxError: &SandboxError{Message: msg},
 		BuildID:      info.BuildID,
+		TemplateID:   info.TemplateID,
 		Logs:         info.Logs,
 	}
 }
@@ -305,6 +307,48 @@ func newBuildFailedError(info *BuildInfo) error {
 // with GetBuildStatus.
 func BuildTemplateBackground(ctx context.Context, spec TemplateSpec, opts ...SandboxOption) (*BuildInfo, error) {
 	return submitBuild(ctx, spec, opts)
+}
+
+// RebuildTemplate re-runs the build of a template whose last build failed and
+// waits for it like BuildTemplate: it returns the completed build, a
+// *BuildError for a failed one, or ctx's error once ctx ends (the build itself
+// keeps running). To see the output as it arrives, start it with
+// RebuildTemplateBackground and wait with WaitForBuild.
+//
+// Templates are immutable once built, so this is a recovery path only: the
+// rebuild reuses the template's stored spec, and a template that is ready, or
+// whose build is still running, is refused with a *ConflictError. It exists
+// because a failed template keeps its alias — BuildTemplate with the same
+// alias is refused with a *ConflictError naming the template to rebuild — and
+// rebuilding is cheaper than deleting it and starting over.
+func RebuildTemplate(ctx context.Context, templateID string, opts ...SandboxOption) (*BuildInfo, error) {
+	info, err := RebuildTemplateBackground(ctx, templateID, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return waitForBuild(ctx, info, nil, opts)
+}
+
+// RebuildTemplateBackground queues a rebuild of a failed template and returns
+// as soon as the server has accepted it, with Status BuildStatusBuilding.
+// Follow the build with WaitForBuild or GetBuildStatus. See RebuildTemplate
+// for when a rebuild is allowed.
+func RebuildTemplateBackground(ctx context.Context, templateID string, opts ...SandboxOption) (*BuildInfo, error) {
+	if templateID == "" {
+		return nil, &InvalidArgumentError{SandboxError: &SandboxError{Message: "template ID is required"}}
+	}
+
+	o := resolveSandboxOpts(opts)
+	cfg := configFromSandboxOpts(o)
+	client := newAPIClient(cfg)
+
+	path := "/templates/" + url.PathEscape(templateID) + "/rebuild"
+	respBody, err := client.post(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseBuildInfo(respBody)
 }
 
 // GetBuildStatus returns the current status of a template build, including

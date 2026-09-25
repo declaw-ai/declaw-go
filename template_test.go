@@ -52,6 +52,13 @@ type buildServer struct {
 	body     map[string]interface{}
 	posts    int
 	polls    int
+
+	// rebuilds counts POST /templates/tpl-1/rebuild; rebuildBody is the last
+	// body it received (the server expects none). rebuildRefusal, when set, is
+	// the 409 body it answers instead of accepting.
+	rebuilds       int
+	rebuildBody    string
+	rebuildRefusal string
 }
 
 func (s *buildServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +71,17 @@ func (s *buildServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &s.body)
 		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"build_id": "bld-1", "status": "building", "template_id": "tpl-1"}`))
+	case r.Method == http.MethodPost && r.URL.Path == "/templates/tpl-1/rebuild":
+		s.rebuilds++
+		raw, _ := io.ReadAll(r.Body)
+		s.rebuildBody = string(raw)
+		if s.rebuildRefusal != "" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(s.rebuildRefusal))
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"build_id": "bld-1", "status": "building", "template_id": "tpl-1"}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/templates/builds/bld-1":
 		i := s.polls
@@ -211,6 +229,9 @@ func TestBuildTemplate_FailedBuildReturnsBuildError(t *testing.T) {
 	if buildErr.BuildID != "bld-1" || len(buildErr.Logs) != 25 {
 		t.Errorf("BuildError BuildID=%q with %d log lines, want bld-1 with 25", buildErr.BuildID, len(buildErr.Logs))
 	}
+	if buildErr.TemplateID != "tpl-1" {
+		t.Errorf("BuildError TemplateID = %q, want tpl-1 (what RebuildTemplate takes)", buildErr.TemplateID)
+	}
 	msg := err.Error()
 	if !strings.Contains(msg, "line 25") || !strings.Contains(msg, "line 06") {
 		t.Errorf("message should quote the last 20 log lines, got:\n%s", msg)
@@ -238,6 +259,137 @@ func TestBuildTemplate_ContextExpiresWhileWaiting(t *testing.T) {
 	}
 	if info == nil || info.BuildID != "bld-1" {
 		t.Errorf("info = %+v, want the running build's BuildInfo so the caller can keep following it", info)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild tests (#919)
+// ---------------------------------------------------------------------------
+
+func TestRebuildTemplate_WaitsForCompletion(t *testing.T) {
+	t.Parallel()
+
+	srv := &buildServer{statuses: []string{statusBuilding, statusCompleted}}
+	_, opt := templateTestEnv(t, srv)
+
+	info, err := RebuildTemplate(context.Background(), "tpl-1", opt)
+	if err != nil {
+		t.Fatalf("RebuildTemplate: %v", err)
+	}
+	if info.Status != BuildStatusCompleted || info.TemplateID != "tpl-1" || info.BuildID != "bld-1" {
+		t.Errorf("info = %+v, want the completed build of tpl-1", info)
+	}
+	if want := []string{"Step 1/3", "Step 2/3", "Step 3/3"}; !reflect.DeepEqual(info.Logs, want) {
+		t.Errorf("Logs = %v, want %v", info.Logs, want)
+	}
+	srv.mu.Lock()
+	rebuilds, body, posts, polls := srv.rebuilds, srv.rebuildBody, srv.posts, srv.polls
+	srv.mu.Unlock()
+	if rebuilds != 1 || posts != 0 {
+		t.Errorf("rebuilds=%d posts=%d, want exactly one POST /templates/tpl-1/rebuild and no /templates/build", rebuilds, posts)
+	}
+	if body != "" {
+		t.Errorf("rebuild sent a body %q; the server reuses the stored spec and takes none", body)
+	}
+	if polls != 2 {
+		t.Errorf("polls = %d, want 2 (stop at the first terminal status)", polls)
+	}
+}
+
+func TestRebuildTemplateBackground_ReturnsAcceptedBuild(t *testing.T) {
+	t.Parallel()
+
+	srv := &buildServer{statuses: []string{statusCompleted}}
+	_, opt := templateTestEnv(t, srv)
+
+	info, err := RebuildTemplateBackground(context.Background(), "tpl-1", opt)
+	if err != nil {
+		t.Fatalf("RebuildTemplateBackground: %v", err)
+	}
+	if info.Status != BuildStatusBuilding || info.BuildID != "bld-1" || info.TemplateID != "tpl-1" {
+		t.Errorf("info = %+v, want the accepted (building) build", info)
+	}
+	if _, polls := srv.counts(); polls != 0 {
+		t.Errorf("polls = %d, want 0: background returns without waiting", polls)
+	}
+}
+
+func TestRebuildTemplate_FailedBuildReturnsBuildError(t *testing.T) {
+	t.Parallel()
+
+	failed, _ := json.Marshal(map[string]interface{}{
+		"build_id": "bld-1", "status": "failed", "template_id": "tpl-1", "logs": []string{"E: nope"},
+	})
+	srv := &buildServer{statuses: []string{string(failed)}}
+	_, opt := templateTestEnv(t, srv)
+
+	info, err := RebuildTemplate(context.Background(), "tpl-1", opt)
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) {
+		t.Fatalf("err = %v (%T), want *BuildError", err, err)
+	}
+	if buildErr.BuildID != "bld-1" || buildErr.TemplateID != "tpl-1" || !strings.Contains(err.Error(), "E: nope") {
+		t.Errorf("BuildError = %+v / %q, want bld-1 of tpl-1 quoting the log", buildErr, err.Error())
+	}
+	if info == nil || info.Status != BuildStatusFailed {
+		t.Errorf("info = %+v, want the failed build's BuildInfo", info)
+	}
+}
+
+// A template that is ready or still building is refused by the API; the
+// refusal surfaces as a *ConflictError carrying the server's explanation.
+func TestRebuildTemplate_RefusedIsConflictError(t *testing.T) {
+	t.Parallel()
+
+	srv := &buildServer{
+		statuses:       []string{statusCompleted},
+		rebuildRefusal: `{"message": "template \"a\" is ready and cannot be rebuilt — templates are immutable once built", "code": "template_immutable"}`,
+	}
+	_, opt := templateTestEnv(t, srv)
+
+	for name, rebuild := range map[string]func(context.Context, string, ...SandboxOption) (*BuildInfo, error){
+		"RebuildTemplate":           RebuildTemplate,
+		"RebuildTemplateBackground": RebuildTemplateBackground,
+	} {
+		info, err := rebuild(context.Background(), "tpl-1", opt)
+		var conflict *ConflictError
+		if !errors.As(err, &conflict) {
+			t.Errorf("%s: err = %v (%T), want *ConflictError", name, err, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), "cannot be rebuilt") {
+			t.Errorf("%s: err = %q, want the server's explanation", name, err.Error())
+		}
+		if info != nil {
+			t.Errorf("%s: info = %+v, want nil when nothing was queued", name, info)
+		}
+	}
+	if _, polls := srv.counts(); polls != 0 {
+		t.Errorf("polls = %d, want 0 after a refusal", polls)
+	}
+}
+
+func TestRebuildTemplate_EmptyIDRejectedBeforeAnyRequest(t *testing.T) {
+	t.Parallel()
+
+	srv := &buildServer{statuses: []string{statusCompleted}}
+	_, opt := templateTestEnv(t, srv)
+
+	for name, rebuild := range map[string]func(context.Context, string, ...SandboxOption) (*BuildInfo, error){
+		"RebuildTemplate":           RebuildTemplate,
+		"RebuildTemplateBackground": RebuildTemplateBackground,
+	} {
+		_, err := rebuild(context.Background(), "", opt)
+		var argErr *InvalidArgumentError
+		if !errors.As(err, &argErr) {
+			t.Errorf("%s: err = %v (%T), want *InvalidArgumentError", name, err, err)
+		}
+	}
+	srv.mu.Lock()
+	rebuilds := srv.rebuilds
+	srv.mu.Unlock()
+	if rebuilds != 0 {
+		t.Errorf("rebuilds = %d, want 0: an empty ID must fail before reaching the API", rebuilds)
 	}
 }
 

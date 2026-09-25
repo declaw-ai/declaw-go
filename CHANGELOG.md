@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (Go module rules: `v0.x` — no stability promise yet).
 
+## [v0.8.0] — 2026-09
+
+_2026-09b train: template rebuild._
+
+### Added
+
+- `RebuildTemplate` and `RebuildTemplateBackground`: retry a template whose
+  build failed (`POST /templates/{id}/rebuild`), reusing its stored spec.
+  `RebuildTemplate` waits like `BuildTemplate`; the background variant returns
+  the accepted build for `WaitForBuild` / `GetBuildStatus`. A template that is
+  not in the `failed` state is refused with `*ConflictError`. (#919)
+- `BuildError.TemplateID`: the failed build's template, so a retry is
+  `RebuildTemplate(ctx, buildErr.TemplateID)`. (#919)
+
 ## [v0.7.0] — 2026-09
 
 _2026-09 train: working template builds._
